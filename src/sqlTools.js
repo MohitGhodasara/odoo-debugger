@@ -1,7 +1,8 @@
 const vscode = require('vscode');
-const { execSync } = require('child_process');
 const utils = require('./utils');
 const dataBrowser = require('./dataBrowser');
+
+const CTX_SQL_FILTER = 'odooDebuggerSqlFilterActive';
 
 // ── Tree items ─────────────────────────────────────────────────────
 
@@ -15,10 +16,9 @@ class SectionItem extends vscode.TreeItem {
 }
 
 class TableItem extends vscode.TreeItem {
-    constructor(tableName, rowCount) {
+    constructor(tableName) {
         super(tableName, vscode.TreeItemCollapsibleState.None);
         this.tableName = tableName;
-        this.description = rowCount != null ? `${rowCount} rows` : '';
         this.tooltip = tableName;
         this.contextValue = 'sqlTable';
         this.iconPath = new vscode.ThemeIcon('table');
@@ -46,13 +46,22 @@ class SqlToolsProvider {
         this._context = context;
         this._onDidChangeTreeData = new vscode.EventEmitter();
         this.onDidChangeTreeData = this._onDidChangeTreeData.event;
-        this._tableCache = null;
+        this._tableCache = null; // all tables from DB
+        this._filter = '';
     }
 
     refresh() {
         this._tableCache = null;
         this._onDidChangeTreeData.fire();
     }
+
+    setFilter(text) {
+        this._filter = text.trim().toLowerCase();
+        vscode.commands.executeCommand('setContext', CTX_SQL_FILTER, this._filter.length > 0);
+        this._onDidChangeTreeData.fire();
+    }
+
+    clearFilter() { this.setFilter(''); }
 
     getTreeItem(el) { return el; }
 
@@ -64,15 +73,29 @@ class SqlToolsProvider {
     }
 
     _getRoots() {
-        const db = utils.getDatabase();
+        const db = utils.getDatabase() || 'not configured';
         const history = this._getHistoryItems();
+        const tables = this._getFilteredTables();
+        const tableLabel = this._filter
+            ? `Tables — ${db} (${tables.length} matches)`
+            : `Tables — ${db}`;
         return [
-            new SectionItem(`Tables — ${db}`, 'tables', 'table'),
+            new SectionItem(tableLabel, 'tables', 'table'),
             new SectionItem(`History (${history.length})`, 'history', 'history'),
         ];
     }
 
     _getTables() {
+        return this._getFilteredTables();
+    }
+
+    _getFilteredTables() {
+        const all = this._getAllTables();
+        if (!this._filter) return all;
+        return all.filter(t => t.tableName.includes(this._filter));
+    }
+
+    _getAllTables() {
         if (this._tableCache) return this._tableCache;
         try {
             const result = dataBrowser.runQuery(
@@ -114,15 +137,26 @@ async function runSql(provider) {
     const sql = await vscode.window.showInputBox({
         title: 'Run SQL',
         placeHolder: 'SELECT * FROM res_partner LIMIT 10',
-        prompt: `Database: ${utils.getDatabase()}`,
+        prompt: `Database: ${utils.getDatabase() || 'not configured'}`,
     });
     if (!sql?.trim()) return;
     provider.addToHistory(sql.trim());
     dataBrowser.runSqlQuery(sql.trim());
 }
 
+async function filterTables(provider) {
+    const input = await vscode.window.showInputBox({
+        title: 'Filter Tables',
+        placeHolder: 'e.g. res_partner or account',
+        value: provider._filter,
+        prompt: 'Substring match on table name',
+    });
+    if (input === undefined) return;
+    provider.setFilter(input);
+}
+
 async function browseTable(tableName) {
-    const sql = `SELECT * FROM ${tableName} ORDER BY id DESC LIMIT 100`;
+    const sql = `SELECT * FROM ${tableName} LIMIT 100`;
     dataBrowser.runSqlQuery(sql);
 }
 
@@ -153,6 +187,6 @@ async function copySelectStatement(tableName) {
 }
 
 module.exports = {
-    SqlToolsProvider,
-    runSql, browseTable, showTableColumns, copySelectStatement,
+    SqlToolsProvider, CTX_SQL_FILTER,
+    runSql, filterTables, browseTable, showTableColumns, copySelectStatement,
 };

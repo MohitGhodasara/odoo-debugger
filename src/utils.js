@@ -48,7 +48,7 @@ function getGithubPath() {
 }
 
 function getDatabase() {
-    return getConfig('database') || _readConfValue('db_name') || 'odoo18';
+    return getConfig('database') || _readConfValue('db_name') || '';
 }
 
 function getPort() {
@@ -75,7 +75,7 @@ function _readConfValue(key) {
 /** Get all DB connection details — explicit setting > conf file > OS default */
 function getDbConfig() {
     return {
-        database: getConfig('database') || _readConfValue('db_name') || 'odoo18',
+        database: getConfig('database') || _readConfValue('db_name') || '',
         host:     getConfig('dbHost')     || _readConfValue('db_host')     || '',
         port:     getConfig('dbPort')     || _readConfValue('db_port')     || '',
         user:     getConfig('dbUser')     || _readConfValue('db_user')     || '',
@@ -112,7 +112,9 @@ function runPsql(sqlOrArgs, extraArgs = []) {
 /** Test DB connection. Returns null on success, error message string on failure. */
 function testDbConnection() {
     try {
-        runPsql('SELECT 1');
+        // Connect to 'postgres' maintenance DB — always exists, doesn't require target DB to exist
+        const { args, env } = buildPsqlArgs('postgres');
+        execSync(`psql ${args.map(a => JSON.stringify(a)).join(' ')} -c "SELECT 1" -q`, { encoding: 'utf8', timeout: 5000, env });
         return null;
     } catch (e) {
         return (e.stderr || e.message || 'Unknown error').trim();
@@ -158,62 +160,95 @@ function getVenvDir() {
 function getOdooBin() {
     // 1. Explicit setting
     const explicit = getConfig('odooBinPath');
-    if (explicit && fs.existsSync(explicit)) return explicit;
+    if (explicit && _isExecutable(explicit)) return explicit;
 
     // 2. communityPath/odoo-bin
     const communityBin = path.join(getCommunityPath(), 'odoo-bin');
-    if (fs.existsSync(communityBin)) return communityBin;
+    if (_isExecutable(communityBin)) return communityBin;
 
-    // 3. Search workspace root up to depth 3
-    const found = _findOdooBin(getWorkspaceRoot(), 0);
-    if (found) return found;
+    // 3. Search workspace root — collect ALL matches
+    const found = _findAllOdooBins(getWorkspaceRoot(), 0);
+    if (found.length === 1) return found[0];
+    if (found.length > 1) return null; // multiple — caller must prompt
 
-    // 4. Not found — return the communityPath default anyway (caller will handle missing)
-    return communityBin;
+    return null; // not found
 }
 
-function _findOdooBin(dir, depth) {
-    if (depth > 3 || !dir || !fs.existsSync(dir)) return null;
+function _isExecutable(filePath) {
+    if (!filePath || !fs.existsSync(filePath)) return false;
+    try {
+        const stat = fs.statSync(filePath);
+        if (!stat.isFile()) return false;
+        if (process.platform !== 'win32') fs.accessSync(filePath, fs.constants.X_OK);
+        return true;
+    } catch (_) { return false; }
+}
+
+function _findAllOdooBins(dir, depth) {
+    if (depth > 3 || !dir || !fs.existsSync(dir)) return [];
+    const results = [];
     try {
         const entries = fs.readdirSync(dir, { withFileTypes: true });
         for (const e of entries) {
-            if (e.name === 'odoo-bin' && !e.isDirectory()) return path.join(dir, e.name);
+            if (e.name === 'odoo-bin' && !e.isDirectory()) {
+                const full = path.join(dir, e.name);
+                if (_isExecutable(full)) results.push(full);
+            }
         }
         for (const e of entries) {
             if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules' && e.name !== '__pycache__') {
-                const found = _findOdooBin(path.join(dir, e.name), depth + 1);
-                if (found) return found;
+                results.push(..._findAllOdooBins(path.join(dir, e.name), depth + 1));
             }
         }
     } catch (_) {}
-    return null;
+    return results;
 }
 
 async function resolveOdooBin() {
-    const bin = getOdooBin();
-    if (fs.existsSync(bin)) return bin;
+    // 1. Explicit setting
+    const explicit = getConfig('odooBinPath');
+    if (explicit && _isExecutable(explicit)) return explicit;
 
-    // Prompt user to locate odoo-bin
-    const pick = await vscode.window.showWarningMessage(
+    // 2. communityPath/odoo-bin
+    const communityBin = path.join(getCommunityPath(), 'odoo-bin');
+    if (_isExecutable(communityBin)) return communityBin;
+
+    // 3. Search workspace — may find multiple
+    const found = _findAllOdooBins(getWorkspaceRoot(), 0);
+
+    if (found.length === 1) return found[0];
+
+    if (found.length > 1) {
+        // Multiple found — let user pick
+        const pick = await vscode.window.showQuickPick(
+            found.map(f => ({ label: path.relative(getWorkspaceRoot(), f), description: f })),
+            { title: 'Multiple odoo-bin found — select one' }
+        );
+        if (!pick) return null;
+        await vscode.workspace.getConfiguration('odooDebugger').update('odooBinPath', pick.description, vscode.ConfigurationTarget.Workspace);
+        return pick.description;
+    }
+
+    // 4. Not found — prompt user
+    const action = await vscode.window.showWarningMessage(
         'odoo-bin not found. Please locate it manually.',
         'Browse...', 'Enter Path'
     );
-    if (pick === 'Browse...') {
+    if (action === 'Browse...') {
         const uris = await vscode.window.showOpenDialog({
             title: 'Select odoo-bin',
             canSelectFiles: true, canSelectFolders: false, canSelectMany: false,
-            filters: { 'odoo-bin': ['bin', ''] },
         });
         if (uris && uris[0]) {
             const selected = uris[0].fsPath;
             await vscode.workspace.getConfiguration('odooDebugger').update('odooBinPath', selected, vscode.ConfigurationTarget.Workspace);
             return selected;
         }
-    } else if (pick === 'Enter Path') {
+    } else if (action === 'Enter Path') {
         const entered = await vscode.window.showInputBox({
             title: 'Path to odoo-bin',
             placeHolder: '/path/to/odoo-bin',
-            validateInput: v => fs.existsSync(v) ? null : 'File not found'
+            validateInput: v => _isExecutable(v) ? null : 'File not found or not executable'
         });
         if (entered) {
             await vscode.workspace.getConfiguration('odooDebugger').update('odooBinPath', entered, vscode.ConfigurationTarget.Workspace);
@@ -312,20 +347,26 @@ function getChangedModules() {
     try {
         const commPath = getCommunityPath();
         if (fs.existsSync(path.join(commPath, '.git'))) {
-            const out = execSync('git diff --name-only', { cwd: commPath, encoding: 'utf8' });
+            const out = execSync('git diff --name-only HEAD', { cwd: commPath, encoding: 'utf8' });
             for (const line of out.trim().split('\n')) {
                 const parts = line.split('/');
-                if (parts.length >= 2 && line.trim()) modules.add(parts[1]);
+                if (parts.length >= 2 && line.trim()) {
+                    const mod = parts[0];
+                    if (mod && fs.existsSync(path.join(commPath, mod, '__manifest__.py'))) modules.add(mod);
+                }
             }
         }
         if (fs.existsSync(ghPath)) {
             const repos = _findGitRepos(ghPath);
             for (const repo of repos) {
                 try {
-                    const out = execSync('git diff --name-only', { cwd: repo, encoding: 'utf8' });
+                    const out = execSync('git diff --name-only HEAD', { cwd: repo, encoding: 'utf8' });
                     for (const line of out.trim().split('\n')) {
                         const parts = line.split('/');
-                        if (parts.length >= 2 && line.trim()) modules.add(parts[0]);
+                        if (parts.length >= 2 && line.trim()) {
+                            const mod = parts[0];
+                            if (mod && fs.existsSync(path.join(repo, mod, '__manifest__.py'))) modules.add(mod);
+                        }
                     }
                 } catch (_) {}
             }

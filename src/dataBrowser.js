@@ -208,7 +208,7 @@ function applySearch() {
     const term = document.getElementById('search').value.trim();
     if (!term) { runSql(_baseSql); return; }
     // Inject WHERE clause — simple approach: wrap as subquery
-    const sql = 'SELECT * FROM (' + _baseSql + ') _q WHERE CAST(_q::text AS text) ILIKE ' + "'" + term.replace(/'/g,"''") + "%'";
+    const sql = 'SELECT * FROM (' + _baseSql + ') _q WHERE CAST(_q::text AS text) ILIKE ' + "'%" + term.replace(/'/g,"''") + "%'";
     runSql(sql);
 }
 

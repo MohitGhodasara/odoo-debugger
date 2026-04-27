@@ -193,14 +193,21 @@ details > .content { padding-top: 6px; }
 <!-- Server (always visible) -->
 <div class="section">
     <div class="section-title">Server</div>
-    <div class="grid ${state === 'stopped' ? 'grid-2' : 'grid-1'}">
-        ${state === 'stopped' ? `
-            <button class="primary" onclick="cmd('odooDebugger.runOdoo')" title="Ctrl+Shift+R">▶ Run</button>
-            <button class="primary" onclick="cmd('odooDebugger.debugOdoo')">● Debug</button>
-        ` : `
-            <button class="stop" onclick="cmd('odooDebugger.stopOdoo')" title="Ctrl+Shift+S">■ Stop</button>
-        `}
+    ${state === 'stopped' ? `
+    <div class="grid grid-2">
+        <button class="primary" onclick="cmd('odooDebugger.runOdoo')" title="Ctrl+Shift+R">▶ Run</button>
+        <button class="primary" onclick="cmd('odooDebugger.debugOdoo')" title="Ctrl+Shift+D">● Debug</button>
     </div>
+    ` : state === 'building' ? `
+    <div class="grid grid-1">
+        <button class="stop" onclick="cmd('odooDebugger.stopOdoo')">■ Stop</button>
+    </div>
+    ` : `
+    <div class="grid grid-2">
+        <button class="stop" onclick="cmd('odooDebugger.stopOdoo')" title="Ctrl+Shift+S">■ Stop</button>
+        <button onclick="cmd('odooDebugger.restartOdoo')" title="Restart Odoo">⟳ Restart</button>
+    </div>
+    `}
 </div>
 
 ${isDebugging ? `
@@ -212,7 +219,6 @@ ${isDebugging ? `
         <button onclick="cmd('workbench.action.debug.stepOver')" title="Step Over (F10)">⤼</button>
         <button onclick="cmd('workbench.action.debug.stepInto')" title="Step Into (F11)">↓</button>
         <button onclick="cmd('workbench.action.debug.stepOut')" title="Step Out (⇧F11)">↑</button>
-        <button onclick="cmd('workbench.action.debug.restart')" title="Restart">⟳</button>
         <button class="stop" onclick="cmd('workbench.action.debug.stop')" title="Stop">■</button>
     </div>
 </div>

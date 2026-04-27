@@ -16,8 +16,13 @@ class ModelItem extends vscode.TreeItem {
         const modules = [...new Set(sources.map(s => s.moduleName))];
         this.description = modules.join(', ');
         this.tooltip = `${modelName}\n${sources.map(s => `${s.isInherit ? '↳ inherit' : '✦ defined'} in ${s.moduleName}`).join('\n')}`;
+        // Determine dominant type across sources
+        const types = [...new Set(sources.map(s => s.modelType || 'model'))];
+        const dominantType = types.includes('model') ? 'model' : types[0];
+        const iconMap = { model: 'symbol-class', transient: 'symbol-interface', abstract: 'symbol-namespace' };
         this.contextValue = 'odooModel';
-        this.iconPath = new vscode.ThemeIcon('symbol-class');
+        this.modelType = dominantType;
+        this.iconPath = new vscode.ThemeIcon(iconMap[dominantType] || 'symbol-class');
         if (sources.length === 1) {
             this.command = { command: 'odooDebugger.modelExplorer.goto', title: 'Go to Model', arguments: [sources[0].filePath, sources[0].line] };
         }
@@ -36,6 +41,18 @@ class SourceItem extends vscode.TreeItem {
     }
 }
 
+const _FIELD_ICONS = {
+    Char: 'symbol-string', Text: 'symbol-string', Html: 'symbol-string',
+    Integer: 'symbol-number', Float: 'symbol-number', Monetary: 'symbol-number',
+    Boolean: 'symbol-boolean',
+    Date: 'symbol-event', Datetime: 'symbol-event',
+    Selection: 'symbol-enum',
+    Many2one: 'symbol-key',
+    One2many: 'symbol-array', Many2many: 'symbol-array',
+    Binary: 'symbol-file', Image: 'symbol-file',
+    Reference: 'symbol-reference',
+};
+
 class FieldItem extends vscode.TreeItem {
     constructor(field) {
         super(field.name, vscode.TreeItemCollapsibleState.None);
@@ -43,8 +60,48 @@ class FieldItem extends vscode.TreeItem {
         this.description = field.type;
         this.tooltip = `${field.name}: fields.${field.type}\n${field.filePath}:${field.line}`;
         this.contextValue = 'odooField';
-        this.iconPath = new vscode.ThemeIcon('symbol-field');
+        this.iconPath = new vscode.ThemeIcon(_FIELD_ICONS[field.type] || 'symbol-field');
         this.command = { command: 'odooDebugger.modelExplorer.goto', title: 'Go to Field', arguments: [field.filePath, field.line] };
+    }
+}
+
+function _methodIcon(method) {
+    const dec = method.decorator || '';
+    const name = method.name || '';
+    if (dec.includes('api.depends') || dec.includes('api.onchange')) return 'symbol-event';
+    if (dec.includes('api.constrains')) return 'symbol-ruler';
+    if (dec.includes('api.model')) return 'symbol-class';
+    if (dec.includes('staticmethod')) return 'symbol-constant';
+    if (dec.includes('classmethod')) return 'symbol-namespace';
+    if (/^action_/.test(name)) return 'symbol-event';
+    if (/^_compute_/.test(name)) return 'symbol-event';
+    if (/^_onchange_/.test(name)) return 'symbol-event';
+    if (/^(_check_|_validate_|_constraint_)/.test(name)) return 'symbol-ruler';
+    if (/^(write|create|unlink|copy)$/.test(name)) return 'symbol-operator';
+    if (/^(name_get|name_search|default_get|fields_get|fields_view_get|read_group)$/.test(name)) return 'symbol-operator';
+    if (/^_/.test(name)) return 'symbol-property';
+    return 'symbol-method';
+}
+
+class MethodItem extends vscode.TreeItem {
+    constructor(method) {
+        super(method.name, vscode.TreeItemCollapsibleState.None);
+        this.method = method;
+        this.description = method.decorator ? `@${method.decorator.replace('@', '')}` : (method.params || '');
+        this.tooltip = `${method.decorator ? method.decorator + '\n' : ''}def ${method.name}(${method.params})\n${method.filePath}:${method.line}`;
+        this.contextValue = 'odooMethod';
+        this.iconPath = new vscode.ThemeIcon(_methodIcon(method));
+        this.command = { command: 'odooDebugger.modelExplorer.goto', title: 'Go to Method', arguments: [method.filePath, method.line] };
+    }
+}
+
+class MethodsGroupItem extends vscode.TreeItem {
+    constructor(methods, filePath) {
+        super(`Methods (${methods.length})`, vscode.TreeItemCollapsibleState.Collapsed);
+        this.methods = methods;
+        this.filePath = filePath;
+        this.contextValue = 'odooMethodsGroup';
+        this.iconPath = new vscode.ThemeIcon('symbol-method');
     }
 }
 
@@ -61,7 +118,11 @@ function parseModelsFromFile(filePath) {
         const line = lines[i];
         if (/^class\s+\w+/.test(line)) {
             if (currentBlock && currentBlock.name) results.push(currentBlock);
-            currentBlock = { classLine: i + 1, name: null, isInherit: false, fields: [] };
+            // Detect model type from class parent
+            let modelType = 'model';
+            if (line.includes('TransientModel')) modelType = 'transient';
+            else if (line.includes('AbstractModel')) modelType = 'abstract';
+            currentBlock = { classLine: i + 1, name: null, isInherit: false, fields: [], modelType };
             continue;
         }
         if (!currentBlock) continue;
@@ -74,6 +135,24 @@ function parseModelsFromFile(filePath) {
         const fieldMatch = line.match(/^\s{4}(\w+)\s*=\s*fields\.(\w+)\s*\(/);
         if (fieldMatch && fieldMatch[1] !== '_name' && fieldMatch[1] !== '_inherit') {
             currentBlock.fields.push({ name: fieldMatch[1], type: fieldMatch[2], line: i + 1 });
+        }
+        // Track decorator on the line before def
+        const decMatch = line.match(/^\s{4}(@(?:api\.\w+|staticmethod|classmethod)[^\n]*)/);
+        if (decMatch) {
+            if (!currentBlock._lastDecorator) currentBlock._lastDecorator = [];
+            currentBlock._lastDecorator.push(decMatch[1].trim());
+        }
+        // Method definition: def method_name(self
+        const methodMatch = line.match(/^\s{4}def\s+(\w+)\s*\(([^)]*)\)/);
+        if (methodMatch) {
+            const params = methodMatch[2].replace(/self,?\s*/, '').trim();
+            const decorator = (currentBlock._lastDecorator || []).join(' ');
+            currentBlock._lastDecorator = null;
+            if (!currentBlock.methods) currentBlock.methods = [];
+            currentBlock.methods.push({ name: methodMatch[1], params, decorator, line: i + 1 });
+        } else if (!line.trim().startsWith('@') && line.trim()) {
+            // Non-decorator, non-def line resets decorator accumulator
+            currentBlock._lastDecorator = null;
         }
     }
     if (currentBlock && currentBlock.name) results.push(currentBlock);
@@ -112,7 +191,9 @@ function scanModels(addonsDirs) {
                         filePath: pyFile,
                         line: parsed.classLine,
                         isInherit: parsed.isInherit,
+                        modelType: parsed.modelType || 'model',
                         fields: parsed.fields.map(f => ({ ...f, filePath: pyFile })),
+                        methods: (parsed.methods || []).map(m => ({ ...m, filePath: pyFile })),
                     };
                     if (!modelMap.has(parsed.name)) modelMap.set(parsed.name, []);
                     modelMap.get(parsed.name).push(source);
@@ -128,24 +209,48 @@ function scanModels(addonsDirs) {
 function _getSourceDirs() {
     const configured = utils.getConfig('modelExplorer.sources') || [];
     if (configured.length) return configured;
-    return utils.getCustomAddonsPaths();
+    // Default: custom addons + community (user can uncheck community in configureSources)
+    const communityAddons = require('path').join(utils.getCommunityPath(), 'addons');
+    const custom = utils.getCustomAddonsPaths();
+    const dirs = [...custom];
+    if (require('fs').existsSync(communityAddons) && !dirs.includes(communityAddons)) {
+        dirs.push(communityAddons);
+    }
+    return dirs;
 }
 
 async function configureSources() {
     const communityAddons = path.join(utils.getCommunityPath(), 'addons');
     const allCustom = utils.discoverAllAddonsDirs();
     const current = _getSourceDirs();
+
     const items = [
+        { label: '$(folder-opened) Browse for folder...', _browse: true },
+        { label: '', kind: vscode.QuickPickItemKind.Separator },
         { label: 'community/addons', description: communityAddons, detail: '⚠ Large — slow to scan', picked: current.includes(communityAddons) },
         ...allCustom.map(dir => ({ label: path.basename(dir), description: dir, picked: current.includes(dir) })),
+        ...current
+            .filter(p => p !== communityAddons && !allCustom.includes(p))
+            .map(p => ({ label: path.basename(p), description: p, picked: true, detail: '(custom)' })),
     ];
+
     const picks = await vscode.window.showQuickPick(items, {
         title: 'Model Explorer — Select Addons Dirs to Scan',
         placeHolder: 'Check directories to include',
         canPickMany: true,
     });
     if (!picks) return;
-    const selected = picks.map(p => p.description);
+
+    let selected = picks.filter(p => !p._browse && p.description).map(p => p.description);
+    if (picks.some(p => p._browse)) {
+        const uris = await vscode.window.showOpenDialog({
+            title: 'Select Addons Directory',
+            canSelectFiles: false, canSelectFolders: true, canSelectMany: true,
+        });
+        if (uris) selected.push(...uris.map(u => u.fsPath));
+    }
+
+    selected = [...new Set(selected)];
     await vscode.workspace.getConfiguration('odooDebugger').update('modelExplorer.sources', selected, vscode.ConfigurationTarget.Workspace);
     vscode.window.showInformationMessage(`Model Explorer sources updated (${selected.length} dirs). Refreshing...`);
     return selected;
@@ -159,14 +264,17 @@ class ModelExplorerProvider {
         this.onDidChangeTreeData = this._onDidChangeTreeData.event;
         this._cache = null;
         this._filter = '';
+        this._typeFilter = 'all'; // 'all' | 'model' | 'transient' | 'abstract'
         this._treeView = null;
         this._revealTimer = null;
+        this._itemCache = new Map(); // key -> TreeItem instance for reveal()
     }
 
     setTreeView(tv) { this._treeView = tv; }
 
     refresh() {
         this._cache = null;
+        this._itemCache.clear();
         this._onDidChangeTreeData.fire();
         this._updateViewDescription();
     }
@@ -179,6 +287,12 @@ class ModelExplorerProvider {
     }
 
     clearFilter() { this.setFilter(''); }
+
+    setTypeFilter(type) {
+        this._typeFilter = type;
+        this._onDidChangeTreeData.fire();
+        this._updateViewDescription();
+    }
 
     _updateViewDescription() {
         if (!this._treeView) return;
@@ -195,20 +309,43 @@ class ModelExplorerProvider {
 
     getChildren(element) {
         if (element instanceof ModelItem) {
-            if (element.sources.length === 1) return this._fieldsForSource(element.sources[0]);
-            return element.sources.map(s => new SourceItem(s));
+            if (element.sources.length === 1) return this._fieldsForSource(element.sources[0], element.modelName);
+            return element.sources.map(s => {
+                const item = new SourceItem(s);
+                this._itemCache.set(`source:${s.filePath}`, item);
+                return item;
+            });
         }
-        if (element instanceof SourceItem) return this._fieldsForSource(element.source);
+        if (element instanceof SourceItem) return this._fieldsForSource(element.source, null);
+        if (element instanceof MethodsGroupItem) {
+            return element.methods.map(m => {
+                const item = new MethodItem(m);
+                this._itemCache.set(`method:${m.filePath}:${m.line}`, item);
+                return item;
+            });
+        }
         return this._getRootItems();
     }
 
-    _fieldsForSource(source) {
-        if (!source.fields.length) {
+    _fieldsForSource(source, modelName) {
+        const items = [];
+        if (source.fields.length) {
+            source.fields.forEach(f => {
+                const item = new FieldItem(f);
+                this._itemCache.set(`field:${f.filePath}:${f.line}`, item);
+                items.push(item);
+            });
+        } else {
             const empty = new vscode.TreeItem('No fields');
             empty.iconPath = new vscode.ThemeIcon('dash');
-            return [empty];
+            items.push(empty);
         }
-        return source.fields.map(f => new FieldItem(f));
+        if (source.methods && source.methods.length) {
+            const groupItem = new MethodsGroupItem(source.methods, source.filePath);
+            this._itemCache.set(`methodsGroup:${source.filePath}`, groupItem);
+            items.push(groupItem);
+        }
+        return items;
     }
 
     _getRootItems() {
@@ -218,17 +355,29 @@ class ModelExplorerProvider {
             item.iconPath = new vscode.ThemeIcon('info');
             return [item];
         }
-        return models.map(([name, sources]) => new ModelItem(name, sources));
+        return models.map(([name, sources]) => {
+            const item = new ModelItem(name, sources);
+            this._itemCache.set(`model:${name}`, item);
+            return item;
+        });
     }
 
     _getFilteredModels() {
         const map = this._getCache();
         const filter = this._filter;
-        const entries = [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-        if (!filter) return entries;
-        return entries.filter(([name, sources]) =>
-            name.includes(filter) || sources.some(s => s.moduleName.toLowerCase().includes(filter))
-        );
+        const typeFilter = this._typeFilter;
+        let entries = [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+        if (filter) {
+            entries = entries.filter(([name, sources]) =>
+                name.includes(filter) || sources.some(s => s.moduleName.toLowerCase().includes(filter))
+            );
+        }
+        if (typeFilter !== 'all') {
+            entries = entries.filter(([, sources]) =>
+                sources.some(s => s.modelType === typeFilter)
+            );
+        }
+        return entries;
     }
 
     _getCache() {
@@ -263,28 +412,34 @@ class ModelExplorerProvider {
     }
 
     _revealFromPython(filePath, cursorLine, cache) {
-        // Find which model+source this file/line belongs to
         for (const [modelName, sources] of cache) {
             for (const source of sources) {
                 if (source.filePath !== filePath) continue;
 
-                // Check if cursor is on a field line
+                // Check field line
                 const field = source.fields.find(f => f.line === cursorLine);
                 if (field) {
-                    const modelItem = new ModelItem(modelName, sources);
-                    if (sources.length === 1) {
-                        const fieldItem = new FieldItem({ ...field, filePath });
-                        this._treeView.reveal(fieldItem, { select: true, focus: false, expand: true }).then(null, () => {});
-                    } else {
-                        const sourceItem = new SourceItem(source);
-                        this._treeView.reveal(sourceItem, { select: true, focus: false, expand: true }).then(null, () => {});
-                    }
+                    const item = this._itemCache.get(`field:${filePath}:${field.line}`);
+                    if (item) this._treeView.reveal(item, { select: true, focus: false, expand: true }).then(null, () => {});
                     return;
                 }
 
-                // Cursor is somewhere in this model's file — reveal the model
-                const modelItem = new ModelItem(modelName, sources);
-                this._treeView.reveal(modelItem, { select: true, focus: false, expand: false }).then(null, () => {});
+                // Check method line
+                const method = (source.methods || []).find(m => m.line === cursorLine);
+                if (method) {
+                    const item = this._itemCache.get(`method:${filePath}:${method.line}`);
+                    if (item) this._treeView.reveal(item, { select: true, focus: false, expand: true }).then(null, () => {});
+                    return;
+                }
+
+                // Reveal model or source
+                if (sources.length > 1) {
+                    const item = this._itemCache.get(`source:${filePath}`);
+                    if (item) this._treeView.reveal(item, { select: true, focus: false, expand: false }).then(null, () => {});
+                } else {
+                    const item = this._itemCache.get(`model:${modelName}`);
+                    if (item) this._treeView.reveal(item, { select: true, focus: false, expand: false }).then(null, () => {});
+                }
                 return;
             }
         }
@@ -335,16 +490,21 @@ async function openModelInBrowser(item) {
 
 // ── XML search helpers ─────────────────────────────────────────────
 
-/** Find all XML files in a directory recursively */
-function _findXmlFiles(dir) {
+/** Find all XML files in a directory recursively. viewsOnly=true skips data/demo/security dirs */
+function _findXmlFiles(dir, viewsOnly = false) {
     const results = [];
     let entries;
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return results; }
+    const skipDirs = new Set(['data', 'demo', 'security', 'tests', 'migrations', 'static', 'i18n']);
     for (const e of entries) {
         if (e.name.startsWith('.') || e.name === '__pycache__') continue;
         const full = path.join(dir, e.name);
-        if (e.isDirectory()) results.push(..._findXmlFiles(full));
-        else if (e.name.endsWith('.xml')) results.push(full);
+        if (e.isDirectory()) {
+            if (viewsOnly && skipDirs.has(e.name)) continue;
+            results.push(..._findXmlFiles(full, viewsOnly));
+        } else if (e.name.endsWith('.xml')) {
+            results.push(full);
+        }
     }
     return results;
 }
@@ -353,18 +513,27 @@ function _findXmlFiles(dir) {
  * Search XML files for a pattern, return matches:
  * [{ filePath, line, lineText, recordId }]
  */
-function _searchXmlFiles(xmlFiles, pattern) {
+function _searchXmlFiles(xmlFiles, pattern, onlyInViews = false) {
     const results = [];
     for (const xmlFile of xmlFiles) {
         let content;
         try { content = fs.readFileSync(xmlFile, 'utf8'); } catch (_) { continue; }
         const lines = content.split('\n');
-        // Track current record id for context
         let currentRecordId = '';
+        let insideUiView = false;
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
-            const recMatch = line.match(/id="([^"]+)"/);
-            if (recMatch && line.includes('<record')) currentRecordId = recMatch[1];
+            // Track record open: <record id="..." model="...">
+            if (line.includes('<record')) {
+                const idMatch = line.match(/id="([^"]+)"/);
+                if (idMatch) currentRecordId = idMatch[1];
+                insideUiView = line.includes('model="ir.ui.view"');
+            }
+            if (line.includes('</record>')) {
+                insideUiView = false;
+            }
+            // Skip if we only want ir.ui.view records and we're not in one
+            if (onlyInViews && !insideUiView) continue;
             if (pattern.test(line)) {
                 results.push({
                     filePath: xmlFile,
@@ -409,10 +578,12 @@ async function gotoXmlView(item) {
             // Same-module first
             const sources = item.sources || [];
             const moduleRoots = [...new Set(sources.map(s => _getModuleRoot(s.filePath)).filter(Boolean))];
-            const sameModuleXmls = moduleRoots.flatMap(r => _findXmlFiles(r));
-            const sameModuleResults = _searchXmlFiles(sameModuleXmls, new RegExp(`model="${modelName}"`));
+            // Search for <field name="model">modelName</field> — only inside ir.ui.view records
+            const viewPattern = new RegExp(`<field\\s[^>]*name="model"[^>]*>${modelName.replace('.', '\\.')}<`);
+            const sameModuleXmls = moduleRoots.flatMap(r => _findXmlFiles(r, true));
+            const sameModuleResults = _searchXmlFiles(sameModuleXmls, viewPattern);
 
-            // All addons
+            // All addons — views only
             const allAddonsDirs = _getSourceDirs();
             const allXmls = allAddonsDirs.flatMap(d => {
                 if (!fs.existsSync(d)) return [];
@@ -420,9 +591,9 @@ async function gotoXmlView(item) {
                 try { mods = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return []; }
                 return mods
                     .filter(m => m.isDirectory() && !m.name.startsWith('.'))
-                    .flatMap(m => _findXmlFiles(path.join(d, m.name)));
+                    .flatMap(m => _findXmlFiles(path.join(d, m.name), true));
             });
-            const allResults2 = _searchXmlFiles(allXmls, new RegExp(`model="${modelName}"`));
+            const allResults2 = _searchXmlFiles(allXmls, viewPattern);
 
             // Deduplicate: remove same-module results from allResults2
             const sameModulePaths = new Set(sameModuleResults.map(r => `${r.filePath}:${r.line}`));
@@ -468,12 +639,13 @@ async function gotoFieldXml(item) {
     await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: `Searching XML for field "${fieldName}"...`, cancellable: false },
         async () => {
-            // Pattern: <field name="fieldName" or name="fieldName" in various contexts
-            const pattern = new RegExp(`name="${fieldName}"`);
+            // Only match <field name="fieldName" — view field tags, not data record attributes
+            const pattern = new RegExp(`<field\\s[^>]*name="${fieldName}"`);
+            const viewsOnly = true;
 
             // Same-module XMLs
-            const sameModuleXmls = moduleRoot ? _findXmlFiles(moduleRoot) : [];
-            const sameModuleResults = _searchXmlFiles(sameModuleXmls, pattern);
+            const sameModuleXmls = moduleRoot ? _findXmlFiles(moduleRoot, viewsOnly) : [];
+            const sameModuleResults = _searchXmlFiles(sameModuleXmls, pattern, true);
 
             // All addons XMLs
             const allAddonsDirs = _getSourceDirs();
@@ -483,9 +655,9 @@ async function gotoFieldXml(item) {
                 try { mods = fs.readdirSync(d, { withFileTypes: true }); } catch (_) { return []; }
                 return mods
                     .filter(m => m.isDirectory() && !m.name.startsWith('.'))
-                    .flatMap(m => _findXmlFiles(path.join(d, m.name)));
+                    .flatMap(m => _findXmlFiles(path.join(d, m.name), viewsOnly));
             });
-            const allResults = _searchXmlFiles(allXmls, pattern);
+            const allResults = _searchXmlFiles(allXmls, pattern, true);
 
             const sameModulePaths = new Set(sameModuleResults.map(r => `${r.filePath}:${r.line}`));
             const otherResults = allResults.filter(r => !sameModulePaths.has(`${r.filePath}:${r.line}`));
@@ -623,10 +795,65 @@ async function searchModels(provider) {
     provider.setFilter(input);
 }
 
+async function findMethodUsages(item) {
+    if (!item || !item.method) return;
+    const methodName = item.method.name;
+    const root = utils.getWorkspaceRoot();
+    await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Finding usages of "${methodName}"...`, cancellable: false },
+        async () => {
+            try {
+                const { execSync } = require('child_process');
+                const out = execSync(
+                    `grep -rn --include='*.py' -E '\.(${methodName})\s*\(' '${root}'`,
+                    { encoding: 'utf8', timeout: 15000 }
+                );
+                const lines = out.trim().split('\n').filter(Boolean);
+                if (!lines.length) {
+                    vscode.window.showInformationMessage(`No usages of "${methodName}" found.`);
+                    return;
+                }
+                const items = lines.map(l => {
+                    const [file, lineNum, ...rest] = l.split(':');
+                    return {
+                        label: `$(file-code) ${path.basename(file)}:${lineNum}`,
+                        description: rest.join(':').trim().substring(0, 100),
+                        detail: file,
+                        filePath: file,
+                        line: parseInt(lineNum, 10),
+                    };
+                });
+                const pick = await vscode.window.showQuickPick(items, {
+                    title: `Usages of .${methodName}() — ${items.length} found`,
+                    matchOnDescription: true,
+                });
+                if (pick) await gotoLocation(pick.filePath, pick.line);
+            } catch (_) {
+                vscode.window.showInformationMessage(`No usages of "${methodName}" found.`);
+            }
+        }
+    );
+}
+
+async function filterModelType(provider) {
+    const items = [
+        { label: '$(symbol-class) All Models', type: 'all', description: 'Show everything' },
+        { label: '$(symbol-class) Regular Models', type: 'model', description: 'models.Model' },
+        { label: '$(symbol-interface) Transient Models', type: 'transient', description: 'models.TransientModel (wizards)' },
+        { label: '$(symbol-namespace) Abstract Models', type: 'abstract', description: 'models.AbstractModel' },
+    ];
+    const current = provider._typeFilter;
+    const pick = await vscode.window.showQuickPick(
+        items.map(i => ({ ...i, picked: i.type === current })),
+        { title: 'Filter by Model Type' }
+    );
+    if (pick) provider.setTypeFilter(pick.type);
+}
+
 module.exports = {
     ModelExplorerProvider, FieldItem, ModelItem, SourceItem,
     OdooXmlSymbolProvider, OdooXmlHoverProvider,
-    gotoLocation, openModelInBrowser, gotoXmlView, gotoFieldXml,
-    searchModels, configureSources,
+    gotoLocation, openModelInBrowser, gotoXmlView, gotoFieldXml, findMethodUsages,
+    searchModels, configureSources, filterModelType,
     CTX_FILTER_ACTIVE,
 };

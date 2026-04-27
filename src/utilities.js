@@ -132,21 +132,47 @@ async function dropDatabase() {
 }
 
 async function switchDatabase() {
+    const currentDb = utils.getDatabase();
+    let dbs = [];
     try {
         const { args, env } = utils.buildPsqlArgs('postgres');
         const out = execSync(
             `psql ${args.map(a => JSON.stringify(a)).join(' ')} -q -A -t -c 'SELECT datname FROM pg_database WHERE datistemplate=false ORDER BY datname'`,
             { encoding: 'utf8', timeout: 5000, env }
         );
-        const dbs = out.trim().split('\n').filter(Boolean);
-        const pick = await vscode.window.showQuickPick(dbs, { title: 'Switch Database' });
-        if (!pick) return;
-        await vscode.workspace.getConfiguration('odooDebugger').update('database', pick, vscode.ConfigurationTarget.Workspace);
-        updateStatusBar();
-        vscode.window.showInformationMessage(`Switched to database: ${pick}`);
-    } catch (e) {
-        vscode.window.showErrorMessage(`Failed to list databases: ${e.message}`);
+        dbs = out.trim().split('\n').filter(Boolean);
+    } catch (_) {}
+
+    // Always offer manual entry at top
+    const items = [
+        { label: '$(edit) Enter database name manually...', _manual: true },
+        ...(dbs.length ? [{ label: '', kind: vscode.QuickPickItemKind.Separator }] : []),
+        ...dbs.map(d => ({ label: d, description: d === currentDb ? '(current)' : '' })),
+    ];
+
+    const pick = await vscode.window.showQuickPick(items, {
+        title: 'Switch Database',
+        placeHolder: dbs.length ? 'Select or enter manually' : 'PostgreSQL not reachable — enter name manually',
+    });
+    if (!pick) return;
+
+    let selected;
+    if (pick._manual) {
+        selected = await vscode.window.showInputBox({
+            title: 'Database Name',
+            value: currentDb,
+            placeHolder: 'e.g. odoo18',
+            validateInput: v => v.trim() ? null : 'Cannot be empty',
+        });
+        if (!selected?.trim()) return;
+        selected = selected.trim();
+    } else {
+        selected = pick.label;
     }
+
+    await vscode.workspace.getConfiguration('odooDebugger').update('database', selected, vscode.ConfigurationTarget.Workspace);
+    updateStatusBar();
+    vscode.window.showInformationMessage(`Switched to database: ${selected}`);
 }
 
 // ── Status Bar ─────────────────────────────────────────────────────

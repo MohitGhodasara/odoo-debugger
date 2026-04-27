@@ -100,6 +100,13 @@ async function stopOdoo() {
     utils.setServerState('stopped', null);
 }
 
+async function restartOdoo() {
+    const prev = utils.getServerState();
+    await stopOdoo();
+    if (prev === 'debugging') await debugOdoo();
+    else await runOdoo();
+}
+
 // ── Install / Update / Uninstall ───────────────────────────────────
 
 async function updateModule() {
@@ -503,7 +510,7 @@ access_${modelUnderscore}_manager,${modelDotName} manager,model_${modelUnderscor
 }
 
 module.exports = {
-    runOdoo, debugOdoo, stopOdoo,
+    runOdoo, debugOdoo, stopOdoo, restartOdoo,
     updateModule, installModule, updateChangedModules, uninstallModule,
     openShell,
     launchChromeDebug, attachJsDebugger,
