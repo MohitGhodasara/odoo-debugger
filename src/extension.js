@@ -4,6 +4,10 @@ const navigation = require('./navigation');
 const utilities = require('./utilities');
 const logViewer = require('./logViewer');
 const { OdooSidebarProvider } = require('./sidebarPanel');
+const { ModelExplorerProvider, FieldItem, ModelItem, OdooXmlSymbolProvider, OdooXmlHoverProvider, gotoLocation, openModelInBrowser, gotoXmlView, gotoFieldXml, searchModels, configureSources, CTX_FILTER_ACTIVE } = require('./modelExplorer');
+const { BreakpointExplorerProvider, gotoBreakpoint, toggleBreakpoint, removeBreakpoint, enableAllBreakpoints, disableAllBreakpoints, clearAllBreakpoints } = require('./breakpointExplorer');
+const { SqlToolsProvider, runSql, browseTable, showTableColumns, copySelectStatement } = require('./sqlTools');
+const dataBrowser = require('./dataBrowser');
 const utils = require('./utils');
 
 function activate(context) {
@@ -14,54 +18,136 @@ function activate(context) {
     // Sidebar webview panel (replaces tree views)
     const sidebarProvider = new OdooSidebarProvider(context);
     context.subscriptions.push(
-        vscode.window.registerWebviewViewProvider('odooDev.sidebar', sidebarProvider, {
+        vscode.window.registerWebviewViewProvider('odooDebugger.sidebar', sidebarProvider, {
             webviewOptions: { retainContextWhenHidden: true }
         })
+    );
+
+    // Model Explorer tree view
+    const modelExplorer = new ModelExplorerProvider();
+    const modelExplorerView = vscode.window.createTreeView('odooDebugger.modelExplorer', {
+        treeDataProvider: modelExplorer,
+        showCollapseAll: true,
+    });
+    modelExplorer.setTreeView(modelExplorerView);
+    context.subscriptions.push(modelExplorerView);
+    context.subscriptions.push(
+        vscode.workspace.onDidSaveTextDocument(doc => {
+            if (doc.fileName.endsWith('.py')) modelExplorer.refresh();
+        })
+    );
+
+    // Cursor sync — auto-reveal in Model Explorer
+    context.subscriptions.push(
+        vscode.window.onDidChangeTextEditorSelection(e => {
+            modelExplorer.onCursorMove(e.textEditor);
+        })
+    );
+
+    // XML Document Symbol provider (Outline panel)
+    context.subscriptions.push(
+        vscode.languages.registerDocumentSymbolProvider(
+            { language: 'xml', pattern: '**/*.xml' },
+            new OdooXmlSymbolProvider()
+        )
+    );
+
+    // XML Hover provider
+    context.subscriptions.push(
+        vscode.languages.registerHoverProvider(
+            { language: 'xml', pattern: '**/*.xml' },
+            new OdooXmlHoverProvider(modelExplorer)
+        )
+    );
+
+    // Breakpoint Explorer tree view
+    const bpExplorer = new BreakpointExplorerProvider();
+    context.subscriptions.push(
+        vscode.window.registerTreeDataProvider('odooDebugger.breakpoints', bpExplorer)
+    );
+    vscode.commands.executeCommand('setContext', CTX_FILTER_ACTIVE, false);
+
+    // SQL Tools tree view
+    const sqlToolsProvider = new SqlToolsProvider(context);
+    context.subscriptions.push(
+        vscode.window.registerTreeDataProvider('odooDebugger.sqlTools', sqlToolsProvider)
     );
 
     // Register all commands
     const commands = {
         // Server
-        'odooDev.runOdoo': server.runOdoo,
-        'odooDev.debugOdoo': server.debugOdoo,
-        'odooDev.stopOdoo': server.stopOdoo,
-        'odooDev.openShell': server.openShell,
+        'odooDebugger.runOdoo': server.runOdoo,
+        'odooDebugger.debugOdoo': server.debugOdoo,
+        'odooDebugger.stopOdoo': server.stopOdoo,
+        'odooDebugger.openShell': server.openShell,
         // Logs
-        'odooDev.logFilterAll': () => { logViewer.setFilter('ALL'); logViewer.startTailing(); sidebarProvider.refresh(); },
-        'odooDev.logFilterError': () => { logViewer.setFilter('ERROR'); logViewer.startTailing(); sidebarProvider.refresh(); },
-        'odooDev.logFilterWarning': () => { logViewer.setFilter('WARNING'); logViewer.startTailing(); sidebarProvider.refresh(); },
-        'odooDev.logFilterInfo': () => { logViewer.setFilter('INFO'); logViewer.startTailing(); sidebarProvider.refresh(); },
-        'odooDev.logFilterDebug': () => { logViewer.setFilter('DEBUG'); logViewer.startTailing(); sidebarProvider.refresh(); },
+        'odooDebugger.logFilterAll': () => { logViewer.setFilter('ALL'); logViewer.startTailing(); sidebarProvider.refresh(); },
+        'odooDebugger.logFilterError': () => { logViewer.setFilter('ERROR'); logViewer.startTailing(); sidebarProvider.refresh(); },
+        'odooDebugger.logFilterWarning': () => { logViewer.setFilter('WARNING'); logViewer.startTailing(); sidebarProvider.refresh(); },
+        'odooDebugger.logFilterInfo': () => { logViewer.setFilter('INFO'); logViewer.startTailing(); sidebarProvider.refresh(); },
+        'odooDebugger.logFilterDebug': () => { logViewer.setFilter('DEBUG'); logViewer.startTailing(); sidebarProvider.refresh(); },
         // JS Debug
-        'odooDev.launchChromeDebug': server.launchChromeDebug,
-        'odooDev.attachJsDebugger': server.attachJsDebugger,
+        'odooDebugger.launchChromeDebug': server.launchChromeDebug,
+        'odooDebugger.attachJsDebugger': server.attachJsDebugger,
         // Modules
-        'odooDev.updateModule': server.updateModule,
-        'odooDev.installModule': server.installModule,
-        'odooDev.updateChangedModules': server.updateChangedModules,
-        'odooDev.uninstallModule': server.uninstallModule,
-        'odooDev.scaffoldModule': server.scaffoldModule,
-        'odooDev.manageAddonsPaths': server.manageAddonsPaths,
+        'odooDebugger.updateModule': server.updateModule,
+        'odooDebugger.installModule': server.installModule,
+        'odooDebugger.updateChangedModules': server.updateChangedModules,
+        'odooDebugger.uninstallModule': server.uninstallModule,
+        'odooDebugger.scaffoldModule': server.scaffoldModule,
+        'odooDebugger.manageAddonsPaths': server.manageAddonsPaths,
         // Navigation
-        'odooDev.toggleModelView': navigation.toggleModelView,
-        'odooDev.gotoModel': navigation.gotoModel,
-        'odooDev.gotoModelFromSelection': navigation.gotoModelFromSelection,
-        'odooDev.gotoXmlId': navigation.gotoXmlId,
-        'odooDev.gotoXmlIdFromSelection': navigation.gotoXmlIdFromSelection,
-        'odooDev.gotoFunctionDef': navigation.gotoFunctionDef,
-        'odooDev.gotoFunctionDefAll': navigation.gotoFunctionDefAll,
-        'odooDev.currentModuleInfo': navigation.currentModuleInfo,
+        'odooDebugger.toggleModelView': navigation.toggleModelView,
+        'odooDebugger.gotoModel': navigation.gotoModel,
+        'odooDebugger.gotoModelFromSelection': navigation.gotoModelFromSelection,
+        'odooDebugger.gotoXmlId': navigation.gotoXmlId,
+        'odooDebugger.gotoXmlIdFromSelection': navigation.gotoXmlIdFromSelection,
+        'odooDebugger.gotoFunctionDef': navigation.gotoFunctionDef,
+        'odooDebugger.gotoFunctionDefAll': navigation.gotoFunctionDefAll,
+        'odooDebugger.currentModuleInfo': navigation.currentModuleInfo,
         // Utilities
-        'odooDev.killPython': utilities.killPython,
-        'odooDev.startPostgres': utilities.startPostgres,
-        'odooDev.openOdoo': utilities.openOdoo,
-        'odooDev.openApps': utilities.openApps,
-        'odooDev.openDebugMode': utilities.openDebugMode,
-        'odooDev.clearAssets': utilities.clearAssets,
-        'odooDev.removeUnusedImports': utilities.removeUnusedImports,
-        'odooDev.dropDatabase': utilities.dropDatabase,
-        'odooDev.copyDatabase': utilities.copyDatabase,
-        'odooDev.switchDatabase': utilities.switchDatabase,
+        'odooDebugger.killPython': utilities.killPython,
+        'odooDebugger.startPostgres': utilities.startPostgres,
+        'odooDebugger.openOdoo': utilities.openOdoo,
+        'odooDebugger.openApps': utilities.openApps,
+        'odooDebugger.openDebugMode': utilities.openDebugMode,
+        'odooDebugger.clearAssets': utilities.clearAssets,
+        'odooDebugger.removeUnusedImports': utilities.removeUnusedImports,
+        'odooDebugger.dropDatabase': utilities.dropDatabase,
+        'odooDebugger.copyDatabase': utilities.copyDatabase,
+        'odooDebugger.switchDatabase': utilities.switchDatabase,
+        'odooDebugger.openSettings': () => vscode.commands.executeCommand('workbench.action.openSettings', 'odooDebugger'),
+        // Model Explorer
+        'odooDebugger.refreshModelExplorer': () => modelExplorer.refresh(),
+        'odooDebugger.modelExplorer.goto': gotoLocation,
+        'odooDebugger.modelExplorer.gotoXmlView': (item) => gotoXmlView(item),
+        'odooDebugger.modelExplorer.openInBrowser': (item) => openModelInBrowser(item),
+        'odooDebugger.modelExplorer.gotoFieldXml': (item) => gotoFieldXml(item),
+        'odooDebugger.modelExplorer.search': () => searchModels(modelExplorer),
+        'odooDebugger.modelExplorer.clearFilter': () => modelExplorer.clearFilter(),
+        'odooDebugger.modelExplorer.configureSources': async () => { await configureSources(); modelExplorer.refresh(); },
+        // Breakpoints
+        'odooDebugger.breakpoints.goto': gotoBreakpoint,
+        'odooDebugger.breakpoints.toggle': (item) => toggleBreakpoint(item.bp),
+        'odooDebugger.breakpoints.remove': (item) => removeBreakpoint(item.bp),
+        'odooDebugger.breakpoints.enableAll': enableAllBreakpoints,
+        'odooDebugger.breakpoints.disableAll': disableAllBreakpoints,
+        'odooDebugger.breakpoints.clearAll': clearAllBreakpoints,
+        // Model data browser
+        'odooDebugger.modelExplorer.browseRecords': (item) => dataBrowser.browseModel(item.modelName),
+        'odooDebugger.modelExplorer.browseFieldValues': (item) => dataBrowser.browseField(
+            // find parent model name by looking up field in cache
+            (() => { for (const [mn, srcs] of modelExplorer._getCache()) { if (srcs.some(s => s.fields.some(f => f.name === item.field.name && f.filePath === item.field.filePath))) return mn; } return ''; })(),
+            item.field.name, item.field.type
+        ),
+        // SQL Tools
+        'odooDebugger.sqlTools.runSql': () => runSql(sqlToolsProvider),
+        'odooDebugger.sqlTools.refresh': () => sqlToolsProvider.refresh(),
+        'odooDebugger.sqlTools.browseTable': (item) => browseTable(typeof item === 'string' ? item : item.tableName),
+        'odooDebugger.sqlTools.showColumns': (item) => showTableColumns(item.tableName),
+        'odooDebugger.sqlTools.copySelect': (item) => copySelectStatement(item.tableName),
+        'odooDebugger.sqlTools.runHistoryItem': (sql) => dataBrowser.runSqlQuery(sql),
+        'odooDebugger.sqlTools.clearHistory': () => sqlToolsProvider.clearHistory(),
     };
 
     for (const [id, handler] of Object.entries(commands)) {
@@ -103,15 +189,45 @@ function activate(context) {
         }
     });
 
-    // Config change listener
+    // Config change listener — odooDebugger settings + python interpreter
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration(e => {
-            if (e.affectsConfiguration('odooDev')) {
+            if (e.affectsConfiguration('odooDebugger') || e.affectsConfiguration('python.defaultInterpreterPath') || e.affectsConfiguration('python.pythonPath')) {
                 utilities.updateStatusBar();
                 sidebarProvider.refresh();
             }
         })
     );
+
+    // Python extension interpreter change event (ms-python.python >= 2023.x)
+    try {
+        const pyExt = vscode.extensions.getExtension('ms-python.python');
+        if (pyExt) {
+            const onEnvChanged = pyExt.exports?.environments?.onDidChangeActiveEnvironmentPath
+                ?? pyExt.exports?.onDidChangeActiveEnvironmentPath;
+            if (onEnvChanged) {
+                context.subscriptions.push(
+                    onEnvChanged(() => {
+                        utilities.updateStatusBar();
+                        sidebarProvider.refresh();
+                    })
+                );
+            }
+        }
+    } catch (_) {}
+
+    // DB connection test — non-blocking, warn if psql fails
+    setTimeout(() => {
+        const err = utils.testDbConnection();
+        if (err) {
+            vscode.window.showWarningMessage(
+                `Odoo Debugger: Cannot connect to PostgreSQL (${utils.getDatabase()}). ${err.split('\n')[0]}`,
+                'Configure DB Settings'
+            ).then(pick => {
+                if (pick) vscode.commands.executeCommand('workbench.action.openSettings', 'odooDebugger.db');
+            });
+        }
+    }, 2000);
 
     // First-run: prompt to configure addons paths
     const configured = utils.getConfig('addonsPaths') || [];
@@ -123,7 +239,7 @@ function activate(context) {
                 'Configure', 'Later'
             ).then(pick => {
                 if (pick === 'Configure') {
-                    vscode.commands.executeCommand('odooDev.manageAddonsPaths');
+                    vscode.commands.executeCommand('odooDebugger.manageAddonsPaths');
                 }
             });
         }
@@ -132,7 +248,7 @@ function activate(context) {
     // Cleanup on deactivate
     context.subscriptions.push({ dispose: () => logViewer.dispose() });
 
-    console.log('Odoo Dev Tools v0.3.0 activated');
+    console.log('Odoo Debugger v1.1.0 activated');
 }
 
 function deactivate() {

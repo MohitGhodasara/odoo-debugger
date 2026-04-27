@@ -40,13 +40,15 @@ async function _ensureStopped(waitForPort = true) {
 
 async function runOdoo() {
     await _ensureStopped();
+    const odooBin = await utils.resolveOdooBin();
+    if (!odooBin) return;
     const args = utils.buildOdooArgs();
     const pythonPath = utils.getPythonPath();
     const config = {
         name: 'Run Odoo',
         type: 'debugpy',
         request: 'launch',
-        program: utils.getOdooBin(),
+        program: odooBin,
         python: pythonPath,
         pythonPath: pythonPath,
         args,
@@ -63,13 +65,15 @@ async function runOdoo() {
 
 async function debugOdoo() {
     await _ensureStopped();
+    const odooBin = await utils.resolveOdooBin();
+    if (!odooBin) return;
     const args = utils.buildOdooArgs();
     const pythonPath = utils.getPythonPath();
     const config = {
         name: 'Debug Odoo',
         type: 'debugpy',
         request: 'launch',
-        program: utils.getOdooBin(),
+        program: odooBin,
         python: pythonPath,
         pythonPath: pythonPath,
         args,
@@ -103,7 +107,7 @@ async function updateModule() {
     if (!mod) return;
     _buildPrevState = utils.getServerState(); // capture BEFORE stopping
     await _ensureStopped(false);
-    _buildModule('update', mod);
+    await _buildModule('update', mod);
 }
 
 async function installModule() {
@@ -111,7 +115,7 @@ async function installModule() {
     if (!mod) return;
     _buildPrevState = utils.getServerState();
     await _ensureStopped(false);
-    _buildModule('init', mod);
+    await _buildModule('init', mod);
 }
 
 async function updateChangedModules() {
@@ -130,7 +134,7 @@ async function updateChangedModules() {
     if (!pick) return;
     _buildPrevState = utils.getServerState();
     await _ensureStopped(false);
-    _buildModule('update', pick.label);
+    await _buildModule('update', pick.label);
 }
 
 async function uninstallModule() {
@@ -140,12 +144,14 @@ async function uninstallModule() {
         `Uninstall "${mod}"? This cannot be undone easily.`, { modal: true }, 'Uninstall'
     );
     if (confirm !== 'Uninstall') return;
+    const odooBin = await utils.resolveOdooBin();
+    if (!odooBin) return;
     const pythonPath = utils.getPythonPath();
     await vscode.debug.startDebugging(undefined, {
         name: 'Odoo Uninstall',
         type: 'debugpy',
         request: 'launch',
-        program: utils.getOdooBin(),
+        program: odooBin,
         python: pythonPath,
         pythonPath: pythonPath,
         args: ['shell', `--database=${utils.getDatabase()}`, `--db-filter=${utils.getDatabase()}`,
@@ -156,12 +162,14 @@ async function uninstallModule() {
     vscode.window.showInformationMessage(`Shell opened. Run: self.env['ir.module.module'].search([('name','=','${mod}')]).button_immediate_uninstall()`);
 }
 
-function _buildModule(action, modules) {
+async function _buildModule(action, modules) {
     const upgradeScript = utils.getConfig('upgradeScript');
     if (upgradeScript) {
         utils.runInTerminal('Odoo Build', `bash "${upgradeScript}" ${modules}`);
         return;
     }
+    const odooBin = await utils.resolveOdooBin();
+    if (!odooBin) return;
     const args = utils.buildOdooArgs([`--${action}=${modules}`, '--stop-after-init']);
     const pythonPath = utils.getPythonPath();
 
@@ -170,7 +178,7 @@ function _buildModule(action, modules) {
         name: 'Odoo Build',
         type: 'debugpy',
         request: 'launch',
-        program: utils.getOdooBin(),
+        program: odooBin,
         python: pythonPath,
         pythonPath: pythonPath,
         args,
@@ -183,12 +191,14 @@ function _buildModule(action, modules) {
 // ── Shell ──────────────────────────────────────────────────────────
 
 async function openShell() {
+    const odooBin = await utils.resolveOdooBin();
+    if (!odooBin) return;
     const pythonPath = utils.getPythonPath();
     await vscode.debug.startDebugging(undefined, {
         name: 'Odoo Shell',
         type: 'debugpy',
         request: 'launch',
-        program: utils.getOdooBin(),
+        program: odooBin,
         python: pythonPath,
         pythonPath: pythonPath,
         args: ['shell', `--database=${utils.getDatabase()}`, `--db-filter=${utils.getDatabase()}`,
@@ -212,7 +222,7 @@ async function launchChromeDebug() {
         chromePath = candidates.find(c => fs.existsSync(c));
     }
     if (!chromePath || !fs.existsSync(chromePath)) {
-        vscode.window.showErrorMessage('Chrome not found. Set odooDev.chromePath in settings.');
+        vscode.window.showErrorMessage('Chrome not found. Set odooDebugger.chromePath in settings.');
         return;
     }
     const port = utils.getConfig('chromeDebugPort') || 9222;
@@ -265,24 +275,43 @@ async function manageAddonsPaths() {
     const allDirs = utils.discoverAllAddonsDirs();
     const currentPaths = utils.getCustomAddonsPaths();
 
-    const items = allDirs.map(dir => ({
-        label: path.basename(dir),
-        description: dir,
-        picked: currentPaths.includes(dir),
-    }));
+    const items = [
+        // Always show a "Browse custom folder..." option at top
+        { label: '$(folder-opened) Browse for folder...', description: 'Add a custom directory not listed below', _browse: true },
+        { label: '', kind: vscode.QuickPickItemKind.Separator },
+        ...allDirs.map(dir => ({
+            label: path.basename(dir),
+            description: dir,
+            picked: currentPaths.includes(dir),
+        })),
+        // Also show currently configured paths that may not be in auto-discovered list
+        ...currentPaths
+            .filter(p => !allDirs.includes(p))
+            .map(p => ({ label: path.basename(p), description: p, picked: true, detail: '(custom — not auto-discovered)' })),
+    ];
 
     const picks = await vscode.window.showQuickPick(items, {
-        title: 'Select Addons Directories',
-        placeHolder: 'Check the directories to include as addons paths',
+        title: 'Manage Addons Paths',
+        placeHolder: 'Check directories to include as addons paths',
         canPickMany: true,
     });
     if (!picks) return;
 
-    const selected = picks.map(p => p.description);
-    await vscode.workspace.getConfiguration('odooDev').update(
+    // Handle browse option
+    let selected = picks.filter(p => !p._browse).map(p => p.description);
+    if (picks.some(p => p._browse)) {
+        const uris = await vscode.window.showOpenDialog({
+            title: 'Select Addons Directory',
+            canSelectFiles: false, canSelectFolders: true, canSelectMany: true,
+        });
+        if (uris) selected.push(...uris.map(u => u.fsPath));
+    }
+
+    selected = [...new Set(selected)];
+    await vscode.workspace.getConfiguration('odooDebugger').update(
         'addonsPaths', selected, vscode.ConfigurationTarget.Workspace
     );
-    vscode.window.showInformationMessage(`Addons paths updated: ${picks.map(p => p.label).join(', ')}`);
+    vscode.window.showInformationMessage(`Addons paths updated: ${selected.length} path(s) configured.`);
 }
 
 // ── Scaffold Module ────────────────────────────────────────────────

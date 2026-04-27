@@ -31,7 +31,7 @@ function resolveVars(str) {
 }
 
 function getConfig(key) {
-    const val = vscode.workspace.getConfiguration('odooDev').get(key);
+    const val = vscode.workspace.getConfiguration('odooDebugger').get(key);
     return typeof val === 'string' ? resolveVars(val) : val;
 }
 
@@ -48,81 +48,179 @@ function getGithubPath() {
 }
 
 function getDatabase() {
-    return getConfig('database') || 'odoo18';
+    return getConfig('database') || _readConfValue('db_name') || 'odoo18';
 }
 
 function getPort() {
-    return getConfig('port') || 8069;
+    return getConfig('port') || _readConfValue('http_port') || 8069;
 }
 
+// ── Odoo conf file parser ──────────────────────────────────────────
 
-// ── Venv ───────────────────────────────────────────────────────────
-// Platform helpers
-const _isWin = process.platform === 'win32';
-const _venvBin = _isWin ? 'Scripts' : 'bin';
-const _pythonExe = _isWin ? 'python.exe' : 'python';
-
-function _isVenvDir(dir) {
-    return fs.existsSync(path.join(dir, _venvBin, _pythonExe));
-}
-
-function _looksLikeVenvPython(pyPath) {
-    if (!pyPath) return false;
-    const sep = path.sep;
-    return pyPath.includes(`${sep}bin${sep}python`) || pyPath.includes(`${sep}Scripts${sep}python`);
-}
-
-function getVenvDir() {
-    const configured = getConfig('venvPath');
-    if (configured && fs.existsSync(configured)) return configured;
-
+/** Parse a single key from the odoo conf/rc file. Returns string or null. */
+function _readConfValue(key) {
     try {
-        const candidates = [];
-        try {
-            const pyEnvsExt = vscode.extensions.getExtension('ms-python.vscode-python-envs');
-            if (pyEnvsExt && pyEnvsExt.isActive && pyEnvsExt.exports && pyEnvsExt.exports.getActiveEnvironmentPath) {
-                const p = pyEnvsExt.exports.getActiveEnvironmentPath();
-                if (p && p.path) candidates.push(p.path);
-            }
-        } catch (_) {}
-        const pyConfig = vscode.workspace.getConfiguration('python');
-        [pyConfig.get('defaultInterpreterPath'), pyConfig.get('pythonPath')].forEach(p => { if (p) candidates.push(p); });
+        const cf = getConfigFile();
+        if (!cf || !fs.existsSync(cf)) return null;
+        const content = fs.readFileSync(cf, 'utf8');
+        const match = content.match(new RegExp(`^${key}\\s*=\\s*(.+)$`, 'm'));
+        if (!match) return null;
+        const val = match[1].trim();
+        // Odoo uses 'False' for unset values
+        if (val === 'False' || val === 'false' || val === '') return null;
+        return val;
+    } catch (_) { return null; }
+}
 
-        for (const pyPath of candidates) {
-            if (_looksLikeVenvPython(pyPath)) {
-                const venvDir = path.resolve(pyPath, '..', '..');
-                if (_isVenvDir(venvDir)) return venvDir;
-            }
+/** Get all DB connection details — explicit setting > conf file > OS default */
+function getDbConfig() {
+    return {
+        database: getConfig('database') || _readConfValue('db_name') || 'odoo18',
+        host:     getConfig('dbHost')     || _readConfValue('db_host')     || '',
+        port:     getConfig('dbPort')     || _readConfValue('db_port')     || '',
+        user:     getConfig('dbUser')     || _readConfValue('db_user')     || '',
+        password: getConfig('dbPassword') || _readConfValue('db_password') || '',
+    };
+}
+
+/**
+ * Build psql CLI args array and env object from DB config.
+ * Usage: execSync(`psql ${buildPsqlArgs().args.join(' ')} ...`, { env: buildPsqlArgs().env })
+ */
+function buildPsqlArgs(overrideDb) {
+    const cfg = getDbConfig();
+    const db = overrideDb || cfg.database;
+    const args = ['-d', db];
+    if (cfg.host) args.push('-h', cfg.host);
+    if (cfg.port) args.push('-p', String(cfg.port));
+    if (cfg.user) args.push('-U', cfg.user);
+    const env = { ...process.env };
+    if (cfg.password) env.PGPASSWORD = cfg.password;
+    return { args, env };
+}
+
+/** Run a psql command, returns stdout string. Throws on error. */
+function runPsql(sqlOrArgs, extraArgs = []) {
+    const { args, env } = buildPsqlArgs();
+    const cmdArgs = [...args, ...extraArgs,
+        typeof sqlOrArgs === 'string' ? `-c` : null,
+        typeof sqlOrArgs === 'string' ? sqlOrArgs : null,
+    ].filter(Boolean);
+    return execSync(`psql ${cmdArgs.map(a => JSON.stringify(a)).join(' ')}`, { encoding: 'utf8', timeout: 10000, env });
+}
+
+/** Test DB connection. Returns null on success, error message string on failure. */
+function testDbConnection() {
+    try {
+        runPsql('SELECT 1');
+        return null;
+    } catch (e) {
+        return (e.stderr || e.message || 'Unknown error').trim();
+    }
+}
+
+
+// ── Python interpreter ─────────────────────────────────────────────
+const _isWin = process.platform === 'win32';
+
+/** Returns the Python interpreter path from VS Code's selected interpreter. */
+function getPythonPath() {
+    // 1. Explicit override in settings
+    const explicit = getConfig('venvPath');
+    if (explicit && fs.existsSync(explicit)) return explicit;
+
+    // 2. VS Code Python extension active environment API (ms-python >= 2023.x)
+    try {
+        const pyExt = vscode.extensions.getExtension('ms-python.python');
+        if (pyExt?.isActive) {
+            const envPath = pyExt.exports?.environments?.getActiveEnvironmentPath?.();
+            if (envPath?.path && fs.existsSync(envPath.path)) return envPath.path;
         }
     } catch (_) {}
 
-    for (const name of ['venv', '.venv', 'env']) {
-        const c = path.join(getWorkspaceRoot(), name);
-        if (_isVenvDir(c)) return c;
+    // 3. python.defaultInterpreterPath / python.pythonPath workspace setting
+    const pyConfig = vscode.workspace.getConfiguration('python');
+    for (const key of ['defaultInterpreterPath', 'pythonPath']) {
+        const p = pyConfig.get(key);
+        if (p && typeof p === 'string' && fs.existsSync(p)) return p;
     }
 
-    const home = process.env.HOME || process.env.USERPROFILE || '';
-    if (home) {
-        try {
-            const envsDir = path.join(home, 'envs');
-            if (fs.existsSync(envsDir)) {
-                for (const e of fs.readdirSync(envsDir, { withFileTypes: true })) {
-                    if (e.isDirectory() && _isVenvDir(path.join(envsDir, e.name))) return path.join(envsDir, e.name);
-                }
-            }
-        } catch (_) {}
-    }
-    return '';
-}
-
-function getPythonPath() {
-    const venv = getVenvDir();
-    if (venv) return path.join(venv, _venvBin, _pythonExe);
     return _isWin ? 'python' : 'python3';
 }
 
+/** For display in status bar / sidebar — parent dir of the interpreter */
+function getVenvDir() {
+    const py = getPythonPath();
+    if (!py || py === 'python' || py === 'python3') return '';
+    return path.dirname(path.dirname(py)); // bin/../ = env root
+}
+
 function getOdooBin() {
-    return path.join(getCommunityPath(), 'odoo-bin');
+    // 1. Explicit setting
+    const explicit = getConfig('odooBinPath');
+    if (explicit && fs.existsSync(explicit)) return explicit;
+
+    // 2. communityPath/odoo-bin
+    const communityBin = path.join(getCommunityPath(), 'odoo-bin');
+    if (fs.existsSync(communityBin)) return communityBin;
+
+    // 3. Search workspace root up to depth 3
+    const found = _findOdooBin(getWorkspaceRoot(), 0);
+    if (found) return found;
+
+    // 4. Not found — return the communityPath default anyway (caller will handle missing)
+    return communityBin;
+}
+
+function _findOdooBin(dir, depth) {
+    if (depth > 3 || !dir || !fs.existsSync(dir)) return null;
+    try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const e of entries) {
+            if (e.name === 'odoo-bin' && !e.isDirectory()) return path.join(dir, e.name);
+        }
+        for (const e of entries) {
+            if (e.isDirectory() && !e.name.startsWith('.') && e.name !== 'node_modules' && e.name !== '__pycache__') {
+                const found = _findOdooBin(path.join(dir, e.name), depth + 1);
+                if (found) return found;
+            }
+        }
+    } catch (_) {}
+    return null;
+}
+
+async function resolveOdooBin() {
+    const bin = getOdooBin();
+    if (fs.existsSync(bin)) return bin;
+
+    // Prompt user to locate odoo-bin
+    const pick = await vscode.window.showWarningMessage(
+        'odoo-bin not found. Please locate it manually.',
+        'Browse...', 'Enter Path'
+    );
+    if (pick === 'Browse...') {
+        const uris = await vscode.window.showOpenDialog({
+            title: 'Select odoo-bin',
+            canSelectFiles: true, canSelectFolders: false, canSelectMany: false,
+            filters: { 'odoo-bin': ['bin', ''] },
+        });
+        if (uris && uris[0]) {
+            const selected = uris[0].fsPath;
+            await vscode.workspace.getConfiguration('odooDebugger').update('odooBinPath', selected, vscode.ConfigurationTarget.Workspace);
+            return selected;
+        }
+    } else if (pick === 'Enter Path') {
+        const entered = await vscode.window.showInputBox({
+            title: 'Path to odoo-bin',
+            placeHolder: '/path/to/odoo-bin',
+            validateInput: v => fs.existsSync(v) ? null : 'File not found'
+        });
+        if (entered) {
+            await vscode.workspace.getConfiguration('odooDebugger').update('odooBinPath', entered, vscode.ConfigurationTarget.Workspace);
+            return entered;
+        }
+    }
+    return null;
 }
 
 function getConfigFile() {
@@ -311,18 +409,22 @@ function runInTerminal(name, command, opts = {}) {
 }
 
 function buildOdooArgs(extra = []) {
+    const cfg = getDbConfig();
     const args = [
         `--addons-path=${getFullAddonsPath()}`,
-        `--database=${getDatabase()}`,
-        `--db-filter=${getDatabase()}`,
+        `--database=${cfg.database}`,
+        `--db-filter=${cfg.database}`,
         '--dev=all',
         `--limit-time-real=${getConfig('limitTimeReal') || 10000}`,
         `--max-cron-threads=${getConfig('maxCronThreads') ?? 0}`,
     ];
+    // Pass explicit DB connection args only when set (not from conf file — conf file is passed via -c)
+    if (getConfig('dbHost'))     args.push(`--db_host=${cfg.host}`);
+    if (getConfig('dbPort'))     args.push(`--db_port=${cfg.port}`);
+    if (getConfig('dbUser'))     args.push(`--db_user=${cfg.user}`);
+    if (getConfig('dbPassword')) args.push(`--db_password=${cfg.password}`);
     const cf = getConfigFile();
-    if (cf && fs.existsSync(cf)) {
-        args.push('-c', cf);
-    }
+    if (cf && fs.existsSync(cf)) args.push('-c', cf);
     args.push('-s');
     args.push(...extra);
     return args;
@@ -333,7 +435,8 @@ module.exports = {
     getServerState, setServerState, getServerTerminal, getDebugSession, onServerStateChange,
     // Config
     getConfig, getWorkspaceRoot, getCommunityPath, getGithubPath, getDatabase, getPort,
-    getVenvDir, getPythonPath, getOdooBin, getConfigFile,
+    getVenvDir, getPythonPath, getOdooBin, resolveOdooBin, getConfigFile,
+    getDbConfig, buildPsqlArgs, runPsql, testDbConnection,
     // Addons
     getCustomAddonsPaths, discoverAllAddonsDirs, getFullAddonsPath,
     // Modules

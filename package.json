@@ -2,7 +2,7 @@
   "name": "odoo-debugger",
   "displayName": "Odoo Debugger",
   "description": "All-in-one Odoo development toolkit — run, debug, update modules, navigate code, filter logs, manage breakpoints, and more. Built for Odoo developers who want to stay in VS Code.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "publisher": "MohitGhodasara",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -49,48 +49,48 @@
     "configuration": {
       "title": "Odoo Debugger",
       "properties": {
-        "odooDev.database": {
+        "odooDebugger.database": {
           "type": "string",
           "default": "odoo18",
           "description": "Default PostgreSQL database name"
         },
-        "odooDev.venvPath": {
+        "odooDebugger.venvPath": {
           "type": "string",
           "default": "",
           "description": "Path to Python virtualenv directory. Auto-detected from VS Code's selected interpreter if empty."
         },
-        "odooDev.addonsPaths": {
+        "odooDebugger.addonsPaths": {
           "type": "array",
           "items": { "type": "string" },
           "default": [],
           "description": "Custom addons directory paths. Use 'Odoo: Manage Addons Paths' to configure."
         },
-        "odooDev.communityPath": {
+        "odooDebugger.communityPath": {
           "type": "string",
           "default": "${workspaceFolder}/community",
           "description": "Path to Odoo community source directory"
         },
-        "odooDev.githubPath": {
+        "odooDebugger.githubPath": {
           "type": "string",
           "default": "${workspaceFolder}/github",
           "description": "Path to custom addons parent directory (used for auto-discovery)"
         },
-        "odooDev.configFile": {
+        "odooDebugger.configFile": {
           "type": "string",
           "default": ".odoorc",
           "description": "Odoo config file path (relative to workspace or absolute)"
         },
-        "odooDev.port": {
+        "odooDebugger.port": {
           "type": "number",
           "default": 8069,
           "description": "Odoo HTTP port"
         },
-        "odooDev.limitTimeReal": {
+        "odooDebugger.limitTimeReal": {
           "type": "number",
           "default": 10000,
           "description": "Request time limit in seconds"
         },
-        "odooDev.excludedAddonsDirs": {
+        "odooDebugger.excludedAddonsDirs": {
           "type": "array",
           "default": [
             "releases", "confs", "scripts", "depricated-addons", "utility",
@@ -98,64 +98,118 @@
           ],
           "description": "Directory names to exclude from addons path auto-discovery"
         },
-        "odooDev.upgradeScript": {
+        "odooDebugger.upgradeScript": {
           "type": "string",
           "default": "",
           "description": "Path to custom upgrade/restart script. If empty, runs odoo-bin directly."
         },
-        "odooDev.maxCronThreads": {
+        "odooDebugger.maxCronThreads": {
           "type": "number",
           "default": 0,
           "description": "Max cron threads (0 to disable cron during development)"
         },
-        "odooDev.chromePath": {
+        "odooDebugger.chromePath": {
           "type": "string",
           "default": "",
           "description": "Path to Chrome/Chromium binary for JS debugging. Auto-detected if empty."
         },
-        "odooDev.chromeDebugPort": {
+        "odooDebugger.chromeDebugPort": {
           "type": "number",
           "default": 9222,
           "description": "Chrome remote debugging port"
+        },
+        "odooDebugger.modelExplorer.sources": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Addons directories to scan in Model Explorer. Empty = use addonsPaths. Use 'Configure Sources' to set."
+        },
+        "odooDebugger.odooBinPath": {
+          "type": "string",
+          "default": "",
+          "description": "Explicit path to odoo-bin executable. Auto-detected if empty."
+        },
+        "odooDebugger.dbHost": {
+          "type": "string",
+          "default": "",
+          "description": "PostgreSQL host. Empty = local socket. Auto-read from conf file if set."
+        },
+        "odooDebugger.dbPort": {
+          "type": "string",
+          "default": "",
+          "description": "PostgreSQL port. Empty = 5432 default. Auto-read from conf file if set."
+        },
+        "odooDebugger.dbUser": {
+          "type": "string",
+          "default": "",
+          "description": "PostgreSQL user. Empty = OS user. Auto-read from conf file if set."
+        },
+        "odooDebugger.dbPassword": {
+          "type": "string",
+          "default": "",
+          "description": "PostgreSQL password. Empty = trust auth. Auto-read from conf file if set."
         }
       }
     },
     "commands": [
-      { "command": "odooDev.runOdoo", "title": "Run Odoo", "category": "Odoo" },
-      { "command": "odooDev.debugOdoo", "title": "Debug Odoo", "category": "Odoo" },
-      { "command": "odooDev.stopOdoo", "title": "Stop Odoo", "category": "Odoo" },
-      { "command": "odooDev.openShell", "title": "Open Odoo Shell", "category": "Odoo" },
-      { "command": "odooDev.logFilterAll", "title": "Log Filter: All", "category": "Odoo" },
-      { "command": "odooDev.logFilterError", "title": "Log Filter: Errors", "category": "Odoo" },
-      { "command": "odooDev.logFilterWarning", "title": "Log Filter: Warnings+", "category": "Odoo" },
-      { "command": "odooDev.logFilterInfo", "title": "Log Filter: Info+", "category": "Odoo" },
-      { "command": "odooDev.logFilterDebug", "title": "Log Filter: Debug+", "category": "Odoo" },
-      { "command": "odooDev.launchChromeDebug", "title": "Launch Chrome (Debug)", "category": "Odoo" },
-      { "command": "odooDev.attachJsDebugger", "title": "Attach JS Debugger", "category": "Odoo" },
-      { "command": "odooDev.updateModule", "title": "Update Module", "category": "Odoo" },
-      { "command": "odooDev.installModule", "title": "Install Module", "category": "Odoo" },
-      { "command": "odooDev.uninstallModule", "title": "Uninstall Module", "category": "Odoo" },
-      { "command": "odooDev.updateChangedModules", "title": "Update Changed Modules", "category": "Odoo" },
-      { "command": "odooDev.scaffoldModule", "title": "Scaffold New Module", "category": "Odoo" },
-      { "command": "odooDev.manageAddonsPaths", "title": "Manage Addons Paths", "category": "Odoo" },
-      { "command": "odooDev.currentModuleInfo", "title": "Current Module Info", "category": "Odoo" },
-      { "command": "odooDev.toggleModelView", "title": "Toggle Model ↔ View", "category": "Odoo" },
-      { "command": "odooDev.gotoModel", "title": "Go to Model Definition", "category": "Odoo" },
-      { "command": "odooDev.gotoModelFromSelection", "title": "Go to Model (Word/Selection)", "category": "Odoo" },
-      { "command": "odooDev.gotoXmlId", "title": "Go to XML ID", "category": "Odoo" },
-      { "command": "odooDev.gotoXmlIdFromSelection", "title": "Go to XML ID (Word/Selection)", "category": "Odoo" },
-      { "command": "odooDev.gotoFunctionDef", "title": "Go to Original Function Definition", "category": "Odoo" },
-      { "command": "odooDev.gotoFunctionDefAll", "title": "Go to All Function Definitions", "category": "Odoo" },
-      { "command": "odooDev.killPython", "title": "Kill Odoo Processes", "category": "Odoo" },
-      { "command": "odooDev.startPostgres", "title": "Start PostgreSQL", "category": "Odoo" },
-      { "command": "odooDev.openOdoo", "title": "Open Odoo in Browser", "category": "Odoo" },
-      { "command": "odooDev.openApps", "title": "Open Apps in Browser", "category": "Odoo" },
-      { "command": "odooDev.openDebugMode", "title": "Open Debug Mode (Assets)", "category": "Odoo" },
-      { "command": "odooDev.clearAssets", "title": "Clear Asset Bundles", "category": "Odoo" },
-      { "command": "odooDev.removeUnusedImports", "title": "Remove Unused Imports", "category": "Odoo" },
-      { "command": "odooDev.dropDatabase", "title": "Drop Database", "category": "Odoo" },
-      { "command": "odooDev.copyDatabase", "title": "Copy Database", "category": "Odoo" },
-      { "command": "odooDev.switchDatabase", "title": "Switch Database", "category": "Odoo" }
+      { "command": "odooDebugger.runOdoo", "title": "Run Odoo", "category": "Odoo" },
+      { "command": "odooDebugger.debugOdoo", "title": "Debug Odoo", "category": "Odoo" },
+      { "command": "odooDebugger.stopOdoo", "title": "Stop Odoo", "category": "Odoo" },
+      { "command": "odooDebugger.openShell", "title": "Open Odoo Shell", "category": "Odoo" },
+      { "command": "odooDebugger.logFilterAll", "title": "Log Filter: All", "category": "Odoo" },
+      { "command": "odooDebugger.logFilterError", "title": "Log Filter: Errors", "category": "Odoo" },
+      { "command": "odooDebugger.logFilterWarning", "title": "Log Filter: Warnings+", "category": "Odoo" },
+      { "command": "odooDebugger.logFilterInfo", "title": "Log Filter: Info+", "category": "Odoo" },
+      { "command": "odooDebugger.logFilterDebug", "title": "Log Filter: Debug+", "category": "Odoo" },
+      { "command": "odooDebugger.launchChromeDebug", "title": "Launch Chrome (Debug)", "category": "Odoo" },
+      { "command": "odooDebugger.attachJsDebugger", "title": "Attach JS Debugger", "category": "Odoo" },
+      { "command": "odooDebugger.updateModule", "title": "Update Module", "category": "Odoo" },
+      { "command": "odooDebugger.installModule", "title": "Install Module", "category": "Odoo" },
+      { "command": "odooDebugger.uninstallModule", "title": "Uninstall Module", "category": "Odoo" },
+      { "command": "odooDebugger.updateChangedModules", "title": "Update Changed Modules", "category": "Odoo" },
+      { "command": "odooDebugger.scaffoldModule", "title": "Scaffold New Module", "category": "Odoo" },
+      { "command": "odooDebugger.manageAddonsPaths", "title": "Manage Addons Paths", "category": "Odoo", "icon": "$(folder)" },
+      { "command": "odooDebugger.currentModuleInfo", "title": "Current Module Info", "category": "Odoo" },
+      { "command": "odooDebugger.toggleModelView", "title": "Toggle Model ↔ View", "category": "Odoo" },
+      { "command": "odooDebugger.gotoModel", "title": "Go to Model Definition", "category": "Odoo" },
+      { "command": "odooDebugger.gotoModelFromSelection", "title": "Go to Model (Word/Selection)", "category": "Odoo" },
+      { "command": "odooDebugger.gotoXmlId", "title": "Go to XML ID", "category": "Odoo" },
+      { "command": "odooDebugger.gotoXmlIdFromSelection", "title": "Go to XML ID (Word/Selection)", "category": "Odoo" },
+      { "command": "odooDebugger.gotoFunctionDef", "title": "Go to Original Function Definition", "category": "Odoo" },
+      { "command": "odooDebugger.gotoFunctionDefAll", "title": "Go to All Function Definitions", "category": "Odoo" },
+      { "command": "odooDebugger.killPython", "title": "Kill Odoo Processes", "category": "Odoo" },
+      { "command": "odooDebugger.startPostgres", "title": "Start PostgreSQL", "category": "Odoo" },
+      { "command": "odooDebugger.openOdoo", "title": "Open Odoo in Browser", "category": "Odoo" },
+      { "command": "odooDebugger.openApps", "title": "Open Apps in Browser", "category": "Odoo" },
+      { "command": "odooDebugger.openDebugMode", "title": "Open Debug Mode (Assets)", "category": "Odoo" },
+      { "command": "odooDebugger.clearAssets", "title": "Clear Asset Bundles", "category": "Odoo" },
+      { "command": "odooDebugger.removeUnusedImports", "title": "Remove Unused Imports", "category": "Odoo" },
+      { "command": "odooDebugger.dropDatabase", "title": "Drop Database", "category": "Odoo" },
+      { "command": "odooDebugger.copyDatabase", "title": "Copy Database", "category": "Odoo" },
+      { "command": "odooDebugger.switchDatabase", "title": "Switch Database", "category": "Odoo", "icon": "$(database)" },
+      { "command": "odooDebugger.refreshModelExplorer", "title": "Refresh Model Explorer", "category": "Odoo", "icon": "$(refresh)" },
+      { "command": "odooDebugger.modelExplorer.goto", "title": "Go to Definition", "category": "Odoo" },
+      { "command": "odooDebugger.modelExplorer.gotoXmlView", "title": "Go to XML View", "category": "Odoo" },
+      { "command": "odooDebugger.modelExplorer.openInBrowser", "title": "Open in Odoo Browser", "category": "Odoo" },
+      { "command": "odooDebugger.modelExplorer.search", "title": "Search / Filter Models", "category": "Odoo", "icon": "$(search)" },
+      { "command": "odooDebugger.modelExplorer.clearFilter", "title": "Clear Filter", "category": "Odoo", "icon": "$(clear-all)" },
+      { "command": "odooDebugger.modelExplorer.configureSources", "title": "Configure Scan Sources", "category": "Odoo", "icon": "$(settings-gear)" },
+      { "command": "odooDebugger.breakpoints.goto", "title": "Go to Breakpoint", "category": "Odoo" },
+      { "command": "odooDebugger.breakpoints.toggle", "title": "Enable/Disable Breakpoint", "category": "Odoo" },
+      { "command": "odooDebugger.breakpoints.remove", "title": "Remove Breakpoint", "category": "Odoo", "icon": "$(trash)" },
+      { "command": "odooDebugger.breakpoints.enableAll", "title": "Enable All Breakpoints", "category": "Odoo", "icon": "$(check-all)" },
+      { "command": "odooDebugger.breakpoints.disableAll", "title": "Disable All Breakpoints", "category": "Odoo", "icon": "$(circle-slash)" },
+      { "command": "odooDebugger.breakpoints.clearAll", "title": "Clear All Breakpoints", "category": "Odoo", "icon": "$(trash)" },
+      { "command": "odooDebugger.openSettings", "title": "Open Settings", "category": "Odoo", "icon": "$(settings-gear)" },
+      { "command": "odooDebugger.modelExplorer.gotoFieldXml", "title": "Find Field in XML", "category": "Odoo", "icon": "$(search)" },
+      { "command": "odooDebugger.modelExplorer.browseRecords", "title": "Browse Records", "category": "Odoo", "icon": "$(table)" },
+      { "command": "odooDebugger.modelExplorer.browseFieldValues", "title": "Browse Field Values", "category": "Odoo", "icon": "$(table)" },
+      { "command": "odooDebugger.sqlTools.runSql", "title": "Run SQL", "category": "Odoo", "icon": "$(play)" },
+      { "command": "odooDebugger.sqlTools.refresh", "title": "Refresh", "category": "Odoo", "icon": "$(refresh)" },
+      { "command": "odooDebugger.sqlTools.browseTable", "title": "Browse Table", "category": "Odoo" },
+      { "command": "odooDebugger.sqlTools.showColumns", "title": "Show Columns", "category": "Odoo" },
+      { "command": "odooDebugger.sqlTools.copySelect", "title": "Copy SELECT Statement", "category": "Odoo" },
+      { "command": "odooDebugger.sqlTools.clearHistory", "title": "Clear History", "category": "Odoo", "icon": "$(trash)" }
     ],
     "viewsContainers": {
       "activitybar": [
@@ -170,28 +224,80 @@
       "odoo-dev": [
         {
           "type": "webview",
-          "id": "odooDev.sidebar",
+          "id": "odooDebugger.sidebar",
           "name": "Odoo Debugger"
+        },
+        {
+          "id": "odooDebugger.modelExplorer",
+          "name": "Model Explorer"
+        },
+        {
+          "id": "odooDebugger.sqlTools",
+          "name": "SQL Tools",
+          "collapsed": true
+        },
+        {
+          "id": "odooDebugger.breakpoints",
+          "name": "Breakpoints",
+          "collapsed": true
+        },
+        {
+          "id": "odooDebugger.dropzone",
+          "name": "Panel",
+          "when": "false"
         }
       ]
     },
     "menus": {
       "editor/context": [
-        { "command": "odooDev.gotoModelFromSelection", "group": "odoo@1" },
-        { "command": "odooDev.gotoXmlIdFromSelection", "group": "odoo@2" },
-        { "command": "odooDev.gotoFunctionDef", "group": "odoo@3" },
-        { "command": "odooDev.toggleModelView", "group": "odoo@4" }
+        { "command": "odooDebugger.gotoModelFromSelection", "group": "odoo@1" },
+        { "command": "odooDebugger.gotoXmlIdFromSelection", "group": "odoo@2" },
+        { "command": "odooDebugger.gotoFunctionDef", "group": "odoo@3" },
+        { "command": "odooDebugger.toggleModelView", "group": "odoo@4" }
+      ],
+      "view/title": [
+        { "command": "odooDebugger.switchDatabase", "when": "view == odooDebugger.sidebar", "group": "navigation@1" },
+        { "command": "odooDebugger.manageAddonsPaths", "when": "view == odooDebugger.sidebar", "group": "navigation@2" },
+        { "command": "odooDebugger.openSettings", "when": "view == odooDebugger.sidebar", "group": "navigation@3" },
+        { "command": "odooDebugger.modelExplorer.search", "when": "view == odooDebugger.modelExplorer", "group": "navigation@1" },
+        { "command": "odooDebugger.modelExplorer.clearFilter", "when": "view == odooDebugger.modelExplorer && odooDebuggerModelFilterActive", "group": "navigation@2" },
+        { "command": "odooDebugger.modelExplorer.configureSources", "when": "view == odooDebugger.modelExplorer", "group": "navigation@3" },
+        { "command": "odooDebugger.refreshModelExplorer", "when": "view == odooDebugger.modelExplorer", "group": "navigation@4" },
+        { "command": "odooDebugger.breakpoints.enableAll", "when": "view == odooDebugger.breakpoints", "group": "navigation@1" },
+        { "command": "odooDebugger.breakpoints.disableAll", "when": "view == odooDebugger.breakpoints", "group": "navigation@2" },
+        { "command": "odooDebugger.breakpoints.clearAll", "when": "view == odooDebugger.breakpoints", "group": "navigation@3" },
+        { "command": "odooDebugger.sqlTools.runSql", "when": "view == odooDebugger.sqlTools", "group": "navigation@1" },
+        { "command": "odooDebugger.sqlTools.refresh", "when": "view == odooDebugger.sqlTools", "group": "navigation@2" },
+        { "command": "odooDebugger.sqlTools.clearHistory", "when": "view == odooDebugger.sqlTools", "group": "navigation@3" }
+      ],
+      "view/item/context": [
+        { "command": "odooDebugger.modelExplorer.gotoXmlView", "when": "viewItem == odooModel", "group": "odoo@1" },
+        { "command": "odooDebugger.modelExplorer.openInBrowser", "when": "viewItem == odooModel", "group": "odoo@2" },
+        { "command": "odooDebugger.modelExplorer.browseRecords", "when": "viewItem == odooModel", "group": "odoo@3" },
+        { "command": "odooDebugger.modelExplorer.gotoXmlView", "when": "viewItem == odooModelSource", "group": "odoo@1" },
+        { "command": "odooDebugger.modelExplorer.gotoFieldXml", "when": "viewItem == odooField", "group": "odoo@1" },
+        { "command": "odooDebugger.modelExplorer.browseFieldValues", "when": "viewItem == odooField", "group": "odoo@2" },
+        { "command": "odooDebugger.breakpoints.toggle", "when": "viewItem == breakpointEnabled || viewItem == breakpointDisabled", "group": "odoo@1" },
+        { "command": "odooDebugger.breakpoints.remove", "when": "viewItem == breakpointEnabled || viewItem == breakpointDisabled", "group": "odoo@2" },
+        { "command": "odooDebugger.sqlTools.browseTable", "when": "viewItem == sqlTable", "group": "odoo@1" },
+        { "command": "odooDebugger.sqlTools.showColumns", "when": "viewItem == sqlTable", "group": "odoo@2" },
+        { "command": "odooDebugger.sqlTools.copySelect", "when": "viewItem == sqlTable", "group": "odoo@3" }
       ]
     },
     "keybindings": [
-      { "command": "odooDev.runOdoo", "key": "ctrl+shift+r", "when": "workspaceFolderCount > 0" },
-      { "command": "odooDev.updateModule", "key": "ctrl+shift+u", "when": "workspaceFolderCount > 0" },
-      { "command": "odooDev.updateChangedModules", "key": "ctrl+shift+g", "when": "workspaceFolderCount > 0" },
-      { "command": "odooDev.toggleModelView", "key": "ctrl+shift+t", "when": "editorIsOpen" },
-      { "command": "odooDev.gotoModelFromSelection", "key": "ctrl+shift+m", "when": "editorTextFocus" },
-      { "command": "odooDev.gotoXmlIdFromSelection", "key": "ctrl+shift+x", "when": "editorTextFocus" },
-      { "command": "odooDev.gotoFunctionDef", "key": "ctrl+shift+d", "when": "editorTextFocus" },
-      { "command": "odooDev.stopOdoo", "key": "ctrl+shift+s", "when": "workspaceFolderCount > 0" }
+      { "command": "odooDebugger.runOdoo",              "key": "ctrl+shift+r", "when": "workspaceFolderCount > 0" },
+      { "command": "odooDebugger.debugOdoo",            "key": "ctrl+shift+d", "when": "workspaceFolderCount > 0 && !editorTextFocus" },
+      { "command": "odooDebugger.stopOdoo",             "key": "ctrl+shift+s", "when": "workspaceFolderCount > 0" },
+      { "command": "odooDebugger.updateModule",         "key": "ctrl+shift+u", "when": "workspaceFolderCount > 0" },
+      { "command": "odooDebugger.installModule",        "key": "ctrl+shift+i", "when": "workspaceFolderCount > 0 && !editorTextFocus" },
+      { "command": "odooDebugger.updateChangedModules", "key": "ctrl+shift+g", "when": "workspaceFolderCount > 0 && !editorFocus" },
+      { "command": "odooDebugger.openOdoo",             "key": "ctrl+shift+b", "when": "workspaceFolderCount > 0 && !editorTextFocus" },
+      { "command": "odooDebugger.openShell",            "key": "ctrl+shift+o", "when": "workspaceFolderCount > 0 && !editorTextFocus" },
+      { "command": "odooDebugger.sqlTools.runSql",      "key": "ctrl+shift+q", "when": "workspaceFolderCount > 0" },
+      { "command": "odooDebugger.gotoModelFromSelection", "key": "ctrl+shift+m", "when": "editorTextFocus" },
+      { "command": "odooDebugger.gotoXmlIdFromSelection", "key": "ctrl+shift+x", "when": "editorTextFocus" },
+      { "command": "odooDebugger.toggleModelView",      "key": "ctrl+shift+t", "when": "editorTextFocus && (resourceExtname == .py || resourceExtname == .xml)" },
+      { "command": "odooDebugger.gotoFunctionDef",      "key": "ctrl+shift+.", "when": "editorTextFocus" }
     ]
   },
   "scripts": {

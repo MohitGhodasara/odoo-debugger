@@ -43,11 +43,12 @@ async function clearAssets() {
     );
     if (confirm !== 'Clear') return;
     try {
-        const out = execSync(
-            `psql -d ${db} -c "DELETE FROM ir_attachment WHERE url LIKE '/web/assets/%';"`,
-            { encoding: 'utf8', timeout: 5000 }
+        const { args, env } = utils.buildPsqlArgs();
+        execSync(
+            `psql ${args.map(a => JSON.stringify(a)).join(' ')} -c "DELETE FROM ir_attachment WHERE url LIKE '/web/assets/%';"`,
+            { encoding: 'utf8', timeout: 5000, env }
         );
-        vscode.window.showInformationMessage(`Asset bundles cleared. ${out.trim()}`);
+        vscode.window.showInformationMessage('Asset bundles cleared.');
     } catch (e) {
         vscode.window.showErrorMessage(`Failed: ${e.message}`);
     }
@@ -73,8 +74,11 @@ async function removeUnusedImports() {
 
 async function copyDatabase() {
     try {
-        const out = execSync("psql -q -A -t -c 'SELECT datname FROM pg_database WHERE datistemplate=false ORDER BY datname' postgres",
-            { encoding: 'utf8', timeout: 5000 });
+        const { args, env } = utils.buildPsqlArgs('postgres');
+        const out = execSync(
+            `psql ${args.map(a => JSON.stringify(a)).join(' ')} -q -A -t -c 'SELECT datname FROM pg_database WHERE datistemplate=false ORDER BY datname'`,
+            { encoding: 'utf8', timeout: 5000, env }
+        );
         const dbs = out.trim().split('\n').filter(Boolean);
         const source = await vscode.window.showQuickPick(dbs, { title: 'Copy Database — Select Source' });
         if (!source) return;
@@ -88,10 +92,16 @@ async function copyDatabase() {
         await vscode.window.withProgress(
             { location: vscode.ProgressLocation.Notification, title: `Copying ${source} → ${newName}...`, cancellable: false },
             async () => {
-                execSync(`createdb -T ${source} ${newName}`, { encoding: 'utf8', timeout: 120000 });
+                const cfg = utils.getDbConfig();
+                const createArgs = ['createdb', '-T', source];
+                if (cfg.host) createArgs.push('-h', cfg.host);
+                if (cfg.port) createArgs.push('-p', String(cfg.port));
+                if (cfg.user) createArgs.push('-U', cfg.user);
+                createArgs.push(newName);
+                execSync(createArgs.map(a => JSON.stringify(a)).join(' '), { encoding: 'utf8', timeout: 120000, env });
             }
         );
-        await vscode.workspace.getConfiguration('odooDev').update('database', newName, vscode.ConfigurationTarget.Workspace);
+        await vscode.workspace.getConfiguration('odooDebugger').update('database', newName, vscode.ConfigurationTarget.Workspace);
         updateStatusBar();
         vscode.window.showInformationMessage(`Database copied: ${source} → ${newName}. Now using ${newName}.`);
     } catch (e) {
@@ -106,7 +116,15 @@ async function dropDatabase() {
     );
     if (confirm !== 'Drop') return;
     try {
-        execSync(`dropdb ${db}`, { encoding: 'utf8' });
+        const cfg = utils.getDbConfig();
+        const dropArgs = ['dropdb'];
+        if (cfg.host) dropArgs.push('-h', cfg.host);
+        if (cfg.port) dropArgs.push('-p', String(cfg.port));
+        if (cfg.user) dropArgs.push('-U', cfg.user);
+        dropArgs.push(db);
+        const env = { ...process.env };
+        if (cfg.password) env.PGPASSWORD = cfg.password;
+        execSync(dropArgs.map(a => JSON.stringify(a)).join(' '), { encoding: 'utf8', env });
         vscode.window.showInformationMessage(`Database "${db}" dropped.`);
     } catch (e) {
         vscode.window.showErrorMessage(`Failed: ${e.message}`);
@@ -115,12 +133,15 @@ async function dropDatabase() {
 
 async function switchDatabase() {
     try {
-        const out = execSync("psql -q -A -t -c 'SELECT datname FROM pg_database WHERE datistemplate=false ORDER BY datname' postgres",
-            { encoding: 'utf8', timeout: 5000 });
+        const { args, env } = utils.buildPsqlArgs('postgres');
+        const out = execSync(
+            `psql ${args.map(a => JSON.stringify(a)).join(' ')} -q -A -t -c 'SELECT datname FROM pg_database WHERE datistemplate=false ORDER BY datname'`,
+            { encoding: 'utf8', timeout: 5000, env }
+        );
         const dbs = out.trim().split('\n').filter(Boolean);
         const pick = await vscode.window.showQuickPick(dbs, { title: 'Switch Database' });
         if (!pick) return;
-        await vscode.workspace.getConfiguration('odooDev').update('database', pick, vscode.ConfigurationTarget.Workspace);
+        await vscode.workspace.getConfiguration('odooDebugger').update('database', pick, vscode.ConfigurationTarget.Workspace);
         updateStatusBar();
         vscode.window.showInformationMessage(`Switched to database: ${pick}`);
     } catch (e) {
@@ -134,7 +155,7 @@ let _statusBarItem;
 
 function createStatusBar() {
     _statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
-    _statusBarItem.command = 'odooDev.switchDatabase';
+    _statusBarItem.command = 'odooDebugger.switchDatabase';
     updateStatusBar();
     _statusBarItem.show();
 

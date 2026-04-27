@@ -11,12 +11,6 @@ class OdooSidebarProvider {
         // Refresh on state changes
         utils.onServerStateChange(() => this._update());
 
-        // Refresh on breakpoint changes
-        vscode.debug.onDidChangeBreakpoints(() => this._update());
-
-        // Refresh on active stack frame change
-        vscode.debug.onDidChangeActiveStackItem?.(() => this._update());
-
         // Refresh when debug session starts/stops
         vscode.debug.onDidStartDebugSession(() => this._update());
         vscode.debug.onDidTerminateDebugSession(() => this._update());
@@ -30,14 +24,6 @@ class OdooSidebarProvider {
             if (msg.command === 'logFilter') {
                 logViewer.setFilter(msg.level);
                 this._update();
-            } else if (msg.command === 'toggleBreakpoint') {
-                this._toggleBreakpoint(msg.index);
-            } else if (msg.command === 'removeBreakpoint') {
-                this._removeBreakpoint(msg.index);
-            } else if (msg.command === 'removeAllBreakpoints') {
-                vscode.debug.removeBreakpoints(vscode.debug.breakpoints);
-            } else if (msg.command === 'gotoBreakpoint') {
-                this._gotoBreakpoint(msg.index);
             } else if (msg.command === 'gotoFrame') {
                 this._gotoFrame(msg.file, msg.line);
             } else if (msg.command) {
@@ -57,34 +43,6 @@ class OdooSidebarProvider {
         this._view.webview.html = this._getHtml();
     }
 
-    refresh() { this._update(); }
-
-    _toggleBreakpoint(index) {
-        const bp = vscode.debug.breakpoints[index];
-        if (!bp) return;
-        if (bp instanceof vscode.SourceBreakpoint) {
-            const newBp = new vscode.SourceBreakpoint(bp.location, !bp.enabled, bp.condition, bp.hitCondition, bp.logMessage);
-            vscode.debug.removeBreakpoints([bp]);
-            vscode.debug.addBreakpoints([newBp]);
-        }
-    }
-
-    _removeBreakpoint(index) {
-        const bp = vscode.debug.breakpoints[index];
-        if (bp) vscode.debug.removeBreakpoints([bp]);
-    }
-
-    async _gotoBreakpoint(index) {
-        const bp = vscode.debug.breakpoints[index];
-        if (bp instanceof vscode.SourceBreakpoint) {
-            const doc = await vscode.workspace.openTextDocument(bp.location.uri);
-            const editor = await vscode.window.showTextDocument(doc);
-            const pos = bp.location.range.start;
-            editor.selection = new vscode.Selection(pos, pos);
-            editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
-        }
-    }
-
     async _gotoFrame(file, line) {
         if (!file || !line) return;
         try {
@@ -96,35 +54,7 @@ class OdooSidebarProvider {
         } catch (_) {}
     }
 
-    _getBreakpointsHtml() {
-        const bps = vscode.debug.breakpoints.filter(bp => bp instanceof vscode.SourceBreakpoint);
-        if (!bps.length) return '<div class="empty">No breakpoints</div>';
-
-        return bps.map((bp, i) => {
-            const uri = bp.location.uri;
-            const line = bp.location.range.start.line + 1;
-            const fname = path.basename(uri.fsPath);
-            const enabled = bp.enabled;
-            const cond = bp.condition ? ` [${bp.condition}]` : '';
-            return `<div class="bp-row ${enabled ? '' : 'disabled'}" onclick="gotoBreakpoint(${i})">
-                <input type="checkbox" ${enabled ? 'checked' : ''} onclick="event.stopPropagation(); toggleBp(${i})" />
-                <span class="bp-file">${fname}:${line}${cond}</span>
-                <span class="bp-remove" onclick="event.stopPropagation(); removeBp(${i})">✕</span>
-            </div>`;
-        }).join('');
-    }
-
-    _getCallStackHtml() {
-        const session = vscode.debug.activeDebugSession;
-        if (!session) return '<div class="empty">Not debugging</div>';
-
-        const activeItem = vscode.debug.activeStackItem;
-        if (!activeItem) return '<div class="empty">Paused — use VS Code call stack to navigate</div>';
-
-        // We can show the active frame info
-        // Full call stack requires DAP requests which are async — show what we can
-        return '<div class="empty">Use step controls above · Active frame shown in editor</div>';
-    }
+    refresh() { this._update(); }
 
     _getHtml() {
         const state = utils.getServerState();
@@ -132,8 +62,7 @@ class OdooSidebarProvider {
         const venvDir = utils.getVenvDir();
         const venvName = venvDir ? path.basename(venvDir) : 'system';
         const logFilter = logViewer.getCurrentFilter();
-        const isDebugging = state === 'debugging' || vscode.debug.activeDebugSession;
-        const bpCount = vscode.debug.breakpoints.filter(bp => bp instanceof vscode.SourceBreakpoint).length;
+        const isDebugging = state === 'debugging';
 
         const statusClass = state === 'running' ? 'running' : state === 'debugging' ? 'debugging' : state === 'building' ? 'building' : 'stopped';
         const statusText = state === 'running' ? '▶ Running' : state === 'debugging' ? '● Debugging' : state === 'building' ? '► Building...' : '■ Stopped';
@@ -243,23 +172,6 @@ details > .content { padding-top: 6px; }
 .filter-btn:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
 .filter-btn.active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); font-weight: 600; }
 
-/* ── Breakpoints ── */
-.bp-row {
-    display: flex; align-items: center; gap: 5px;
-    padding: 4px 6px; border-radius: 3px; cursor: pointer;
-    font-size: 12px;
-}
-.bp-row:hover { background: var(--vscode-list-hoverBackground); }
-.bp-row.disabled { opacity: 0.45; }
-.bp-row input[type="checkbox"] { margin: 0; cursor: pointer; accent-color: var(--vscode-button-background); }
-.bp-file { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bp-remove { opacity: 0; color: var(--vscode-errorForeground); font-size: 11px; padding: 0 3px; }
-.bp-row:hover .bp-remove { opacity: 1; }
-.bp-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
-.bp-header .section-title { margin: 0; }
-.bp-clear { font-size: 11px; cursor: pointer; color: var(--vscode-descriptionForeground); padding: 2px 6px; border-radius: 3px; }
-.bp-clear:hover { background: var(--vscode-list-hoverBackground); color: var(--vscode-foreground); }
-
 /* ── Debug controls ── */
 .debug-controls {
     display: flex; gap: 2px; margin-bottom: 4px;
@@ -283,10 +195,10 @@ details > .content { padding-top: 6px; }
     <div class="section-title">Server</div>
     <div class="grid ${state === 'stopped' ? 'grid-2' : 'grid-1'}">
         ${state === 'stopped' ? `
-            <button class="primary" onclick="cmd('odooDev.runOdoo')" title="Ctrl+Shift+R">▶ Run</button>
-            <button class="primary" onclick="cmd('odooDev.debugOdoo')">● Debug</button>
+            <button class="primary" onclick="cmd('odooDebugger.runOdoo')" title="Ctrl+Shift+R">▶ Run</button>
+            <button class="primary" onclick="cmd('odooDebugger.debugOdoo')">● Debug</button>
         ` : `
-            <button class="stop" onclick="cmd('odooDev.stopOdoo')" title="Ctrl+Shift+S">■ Stop</button>
+            <button class="stop" onclick="cmd('odooDebugger.stopOdoo')" title="Ctrl+Shift+S">■ Stop</button>
         `}
     </div>
 </div>
@@ -310,24 +222,9 @@ ${isDebugging ? `
 <div class="section">
     <div class="section-title">Modules</div>
     <div class="grid grid-3">
-        <button onclick="cmd('odooDev.updateModule')" title="Ctrl+Shift+U">⟳ Update</button>
-        <button onclick="cmd('odooDev.installModule')">+ Install</button>
-        <button onclick="cmd('odooDev.updateChangedModules')" title="Ctrl+Shift+G">⟳ Changed</button>
-    </div>
-</div>
-
-<!-- Navigate (always visible) -->
-<div class="section">
-    <div class="section-title">Navigate</div>
-    <div class="grid grid-3">
-        <button onclick="cmd('odooDev.toggleModelView')" title="Ctrl+Shift+T">⇄ Py↔Xml</button>
-        <button onclick="cmd('odooDev.gotoModelFromSelection')" title="Ctrl+Shift+M">Model ✦</button>
-        <button onclick="cmd('odooDev.gotoFunctionDef')" title="Ctrl+Shift+D">Func ✦</button>
-    </div>
-    <div class="grid grid-3 mt">
-        <button onclick="cmd('odooDev.gotoXmlIdFromSelection')" title="Ctrl+Shift+X">XML ID ✦</button>
-        <button onclick="cmd('odooDev.gotoFunctionDefAll')">All Defs ✦</button>
-        <button onclick="cmd('odooDev.currentModuleInfo')">Module Info</button>
+        <button onclick="cmd('odooDebugger.updateModule')" title="Ctrl+Shift+U">⟳ Update</button>
+        <button onclick="cmd('odooDebugger.installModule')">+ Install</button>
+        <button onclick="cmd('odooDebugger.updateChangedModules')" title="Ctrl+Shift+G">⟳ Changed</button>
     </div>
 </div>
 
@@ -348,8 +245,8 @@ ${isDebugging ? `
     <summary>JS Debug</summary>
     <div class="content">
         <div class="grid grid-2">
-            <button onclick="cmd('odooDev.launchChromeDebug')">Chrome Debug</button>
-            <button onclick="cmd('odooDev.attachJsDebugger')">Attach JS</button>
+            <button onclick="cmd('odooDebugger.launchChromeDebug')">Chrome Debug</button>
+            <button onclick="cmd('odooDebugger.attachJsDebugger')">Attach JS</button>
         </div>
     </div>
 </details>
@@ -359,40 +256,26 @@ ${isDebugging ? `
     <summary>Tools</summary>
     <div class="content">
         <div class="grid grid-3">
-            <button onclick="cmd('odooDev.openShell')">⟩_ Shell</button>
-            <button onclick="cmd('odooDev.switchDatabase')">Switch DB</button>
-            <button onclick="cmd('odooDev.copyDatabase')">Copy DB</button>
+            <button onclick="cmd('odooDebugger.openShell')">⟩_ Shell</button>
+            <button onclick="cmd('odooDebugger.openOdoo')">Open Odoo</button>
+            <button onclick="cmd('odooDebugger.openApps')">Apps</button>
         </div>
         <div class="grid grid-3 mt">
-            <button onclick="cmd('odooDev.openOdoo')">Open Odoo</button>
+            <button onclick="cmd('odooDebugger.copyDatabase')">Copy DB</button>
+            <button onclick="cmd('odooDebugger.openDebugMode')">Debug URL</button>
+            <button onclick="cmd('odooDebugger.clearAssets')">Clear Assets</button>
         </div>
         <div class="grid grid-3 mt">
-            <button onclick="cmd('odooDev.openDebugMode')">Debug URL</button>
-            <button onclick="cmd('odooDev.uninstallModule')">Uninstall</button>
-            <button onclick="cmd('odooDev.scaffoldModule')">Scaffold</button>
-            <button onclick="cmd('odooDev.manageAddonsPaths')">Paths</button>
+            <button onclick="cmd('odooDebugger.uninstallModule')">Uninstall</button>
+            <button onclick="cmd('odooDebugger.scaffoldModule')">Scaffold</button>
+            <button onclick="cmd('odooDebugger.startPostgres')">Start PG</button>
         </div>
         <div class="grid grid-3 mt">
-            <button onclick="cmd('odooDev.clearAssets')">Clear Assets</button>
-            <button onclick="cmd('odooDev.openApps')">Apps</button>
-            <button onclick="cmd('odooDev.openDebugMode')">Debug URL</button>
-        </div>
-        <div class="grid grid-3 mt">
-            <button onclick="cmd('odooDev.killPython')">Kill Py</button>
-            <button onclick="cmd('odooDev.startPostgres')">Start PG</button>
-            <button class="danger" onclick="cmd('odooDev.dropDatabase')">Drop DB</button>
+            <button onclick="cmd('odooDebugger.killPython')">Kill Py</button>
+            <button class="danger" onclick="cmd('odooDebugger.dropDatabase')">Drop DB</button>
         </div>
     </div>
 </details>
-
-<!-- Breakpoints (bottom) -->
-<div class="section">
-    <div class="bp-header">
-        <div class="section-title">Breakpoints ${bpCount ? `(${bpCount})` : ''}</div>
-        ${bpCount ? `<span class="bp-clear" onclick="msg('removeAllBreakpoints')">Clear All</span>` : ''}
-    </div>
-    ${this._getBreakpointsHtml()}
-</div>
 
 <script>
     const vscode = acquireVsCodeApi();
@@ -400,9 +283,6 @@ ${isDebugging ? `
     function cmd(c) { vscode.postMessage({ command: c }); }
     function msg(c) { vscode.postMessage({ command: c }); }
     function logFilter(l) { vscode.postMessage({ command: 'logFilter', level: l }); }
-    function toggleBp(i) { vscode.postMessage({ command: 'toggleBreakpoint', index: i }); }
-    function removeBp(i) { vscode.postMessage({ command: 'removeBreakpoint', index: i }); }
-    function gotoBreakpoint(i) { vscode.postMessage({ command: 'gotoBreakpoint', index: i }); }
     function gotoFrame(f, l) { vscode.postMessage({ command: 'gotoFrame', file: f, line: l }); }
     // Restore and persist <details> open/close state
     document.querySelectorAll('details').forEach(d => {
