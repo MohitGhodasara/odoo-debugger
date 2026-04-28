@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs');
 
 // ── Server state tracking ──────────────────────────────────────────
-let _serverState = 'stopped'; // 'stopped' | 'running' | 'debugging' | 'building'
+let _serverState = 'stopped'; // 'stopped' | 'starting' | 'running' | 'debugging' | 'building'
 let _serverTerminal = null;
 let _debugSession = null;
 let _onStateChange = new vscode.EventEmitter();
@@ -37,14 +37,6 @@ function getConfig(key) {
 
 function getWorkspaceRoot() {
     return (vscode.workspace.workspaceFolders || [])[0]?.uri.fsPath || '';
-}
-
-function getCommunityPath() {
-    return getConfig('communityPath') || path.join(getWorkspaceRoot(), 'community');
-}
-
-function getGithubPath() {
-    return getConfig('githubPath') || path.join(getWorkspaceRoot(), 'github');
 }
 
 function getDatabase() {
@@ -134,9 +126,14 @@ function getPythonPath() {
     // 2. VS Code Python extension active environment API (ms-python >= 2023.x)
     try {
         const pyExt = vscode.extensions.getExtension('ms-python.python');
-        if (pyExt?.isActive) {
-            const envPath = pyExt.exports?.environments?.getActiveEnvironmentPath?.();
+        if (pyExt) {
+            // Try environments API (newer versions)
+            const envPath = pyExt.exports?.environments?.getActiveEnvironmentPath?.()
+                ?? pyExt.exports?.getActiveEnvironmentPath?.();
             if (envPath?.path && fs.existsSync(envPath.path)) return envPath.path;
+            // Try direct interpreter path (older versions)
+            const interp = pyExt.exports?.settings?.getExecutionDetails?.()?.execCommand?.[0];
+            if (interp && fs.existsSync(interp)) return interp;
         }
     } catch (_) {}
 
@@ -162,11 +159,7 @@ function getOdooBin() {
     const explicit = getConfig('odooBinPath');
     if (explicit && _isExecutable(explicit)) return explicit;
 
-    // 2. communityPath/odoo-bin
-    const communityBin = path.join(getCommunityPath(), 'odoo-bin');
-    if (_isExecutable(communityBin)) return communityBin;
-
-    // 3. Search workspace root — collect ALL matches
+    // 2. Search workspace root — collect ALL matches
     const found = _findAllOdooBins(getWorkspaceRoot(), 0);
     if (found.length === 1) return found[0];
     if (found.length > 1) return null; // multiple — caller must prompt
@@ -209,11 +202,7 @@ async function resolveOdooBin() {
     const explicit = getConfig('odooBinPath');
     if (explicit && _isExecutable(explicit)) return explicit;
 
-    // 2. communityPath/odoo-bin
-    const communityBin = path.join(getCommunityPath(), 'odoo-bin');
-    if (_isExecutable(communityBin)) return communityBin;
-
-    // 3. Search workspace — may find multiple
+    // 2. Search workspace — may find multiple
     const found = _findAllOdooBins(getWorkspaceRoot(), 0);
 
     if (found.length === 1) return found[0];
@@ -267,58 +256,76 @@ function getConfigFile() {
 
 // ── Addons paths ───────────────────────────────────────────────────
 
-/** Get configured addons paths, or auto-discover if empty */
+/**
+ * Get configured addons paths.
+ * Priority: explicit setting > conf file addons_path > empty
+ */
 function getCustomAddonsPaths() {
     const configured = getConfig('addonsPaths') || [];
     if (configured.length) return configured.map(p => resolveVars(p));
-    return _autoDiscoverAddonsDirs();
+    // Fall back to conf file addons_path
+    const fromConf = _readConfValue('addons_path');
+    if (fromConf) return fromConf.split(',').map(p => p.trim()).filter(Boolean);
+    return [];
 }
 
-/** Auto-discover addons dirs from github path (fallback when nothing configured) */
-function _autoDiscoverAddonsDirs() {
-    const ghPath = getGithubPath();
-    if (!fs.existsSync(ghPath)) return [];
-    const excluded = getConfig('excludedAddonsDirs') || [];
-    const paths = [];
-    try {
-        const repos = fs.readdirSync(ghPath, { withFileTypes: true });
-        for (const repo of repos) {
-            if (!repo.isDirectory() || repo.name.startsWith('.')) continue;
-            const repoPath = path.join(ghPath, repo.name);
-            const subs = fs.readdirSync(repoPath, { withFileTypes: true });
-            for (const s of subs) {
-                if (!s.isDirectory() || s.name.startsWith('.') || excluded.includes(s.name)) continue;
-                paths.push(path.join(repoPath, s.name));
-            }
-        }
-    } catch (_) {}
-    return paths;
-}
-
-/** Discover ALL possible addons dirs (for the manage picker) */
+/**
+ * Discover ALL possible addons dirs for the Manage Addons Paths picker.
+ * Sources: conf file addons_path + community dirs from odooBinPath + workspace scan.
+ */
 function discoverAllAddonsDirs() {
-    const ghPath = getGithubPath();
-    if (!fs.existsSync(ghPath)) return [];
+    const seen = new Set();
     const paths = [];
+    const addDir = (d) => { if (d && fs.existsSync(d) && !seen.has(d)) { seen.add(d); paths.push(d); } };
+
+    // 1. From conf file addons_path
     try {
-        const repos = fs.readdirSync(ghPath, { withFileTypes: true });
-        for (const repo of repos) {
-            if (!repo.isDirectory() || repo.name.startsWith('.')) continue;
-            const repoPath = path.join(ghPath, repo.name);
-            const subs = fs.readdirSync(repoPath, { withFileTypes: true });
-            for (const s of subs) {
-                if (!s.isDirectory() || s.name.startsWith('.')) continue;
-                paths.push(path.join(repoPath, s.name));
-            }
+        const fromConf = _readConfValue('addons_path');
+        if (fromConf) fromConf.split(',').map(p => p.trim()).filter(Boolean).forEach(addDir);
+    } catch (_) {}
+
+    // 2. Community addons dirs — siblings of odoo-bin
+    try {
+        const odooBin = getConfig('odooBinPath') || getOdooBin();
+        if (odooBin) {
+            const root = path.dirname(odooBin);
+            for (const rel of ['addons', path.join('odoo', 'addons')]) addDir(path.join(root, rel));
         }
     } catch (_) {}
+
+    // 3. Scan workspace root for any dir containing __manifest__.py modules (depth 2)
+    try {
+        const ws = getWorkspaceRoot();
+        if (ws) _scanForAddonsDirs(ws, 0, addDir);
+    } catch (_) {}
+
     return paths.sort();
 }
 
+/** Recursively scan for directories that contain Odoo modules (have subdirs with __manifest__.py) */
+function _scanForAddonsDirs(dir, depth, addDir) {
+    if (depth > 2) return;
+    try {
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        const skip = new Set(['.git', 'node_modules', '__pycache__', '.vscode', '.idea']);
+        let hasModules = false;
+        for (const e of entries) {
+            if (!e.isDirectory() || skip.has(e.name) || e.name.startsWith('.')) continue;
+            if (fs.existsSync(path.join(dir, e.name, '__manifest__.py'))) {
+                hasModules = true;
+            }
+        }
+        if (hasModules) { addDir(dir); return; } // this dir IS an addons dir
+        for (const e of entries) {
+            if (!e.isDirectory() || skip.has(e.name) || e.name.startsWith('.')) continue;
+            _scanForAddonsDirs(path.join(dir, e.name), depth + 1, addDir);
+        }
+    } catch (_) {}
+}
+
 function getFullAddonsPath() {
-    const communityAddons = path.join(getCommunityPath(), 'addons');
     const custom = getCustomAddonsPaths();
-    return custom.length ? `${communityAddons},${custom.join(',')}` : communityAddons;
+    return custom.join(',') || '';
 }
 
 // ── Module discovery (filesystem only) ─────────────────────────────
@@ -342,53 +349,61 @@ function discoverModulesFromDisk() {
 }
 
 function getChangedModules() {
-    const ghPath = getGithubPath();
     const modules = new Set();
-    try {
-        const commPath = getCommunityPath();
-        if (fs.existsSync(path.join(commPath, '.git'))) {
-            const out = execSync('git diff --name-only HEAD', { cwd: commPath, encoding: 'utf8' });
-            for (const line of out.trim().split('\n')) {
-                const parts = line.split('/');
-                if (parts.length >= 2 && line.trim()) {
-                    const mod = parts[0];
-                    if (mod && fs.existsSync(path.join(commPath, mod, '__manifest__.py'))) modules.add(mod);
-                }
-            }
-        }
-        if (fs.existsSync(ghPath)) {
-            const repos = _findGitRepos(ghPath);
-            for (const repo of repos) {
+    const repoSet = new Set();
+    // Find git repos by walking up from each addons path
+    for (const addonsDir of getCustomAddonsPaths()) {
+        const repo = _findGitRootUp(addonsDir);
+        if (repo) repoSet.add(repo);
+    }
+    // Also walk up from workspace root as fallback
+    const wsRepo = _findGitRootUp(getWorkspaceRoot());
+    if (wsRepo) repoSet.add(wsRepo);
+
+    for (const repo of repoSet) {
+        try {
+            // unstaged + staged changes
+            const cmds = [
+                'git diff --name-only HEAD',
+                'git diff --name-only --cached HEAD',
+            ];
+            const lines = new Set();
+            for (const cmd of cmds) {
                 try {
-                    const out = execSync('git diff --name-only HEAD', { cwd: repo, encoding: 'utf8' });
-                    for (const line of out.trim().split('\n')) {
-                        const parts = line.split('/');
-                        if (parts.length >= 2 && line.trim()) {
-                            const mod = parts[0];
-                            if (mod && fs.existsSync(path.join(repo, mod, '__manifest__.py'))) modules.add(mod);
-                        }
-                    }
+                    execSync(cmd, { cwd: repo, encoding: 'utf8' })
+                        .trim().split('\n')
+                        .filter(l => l.trim())
+                        .forEach(l => lines.add(l));
                 } catch (_) {}
             }
-        }
-    } catch (_) {}
+            for (const line of lines) {
+                const parts = line.split('/');
+                if (parts.length < 2) continue;
+                // Try parts[0] (flat: module/file.py) and parts[1] (nested: addons/module/file.py)
+                for (const idx of [0, 1]) {
+                    if (idx >= parts.length - 1) continue;
+                    const mod = parts[idx];
+                    if (mod && fs.existsSync(path.join(repo, parts.slice(0, idx + 1).join('/'), '__manifest__.py'))) {
+                        modules.add(mod);
+                        break;
+                    }
+                }
+            }
+        } catch (_) {}
+    }
     modules.delete('');
     return [...modules];
 }
 
-function _findGitRepos(dir, depth = 0) {
-    if (depth > 2) return [];
-    const repos = [];
-    try {
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
-        for (const e of entries) {
-            if (!e.isDirectory() || e.name.startsWith('.')) continue;
-            const full = path.join(dir, e.name);
-            if (e.name === '.git') { repos.push(dir); continue; }
-            repos.push(..._findGitRepos(full, depth + 1));
-        }
-    } catch (_) {}
-    return repos;
+/** Walk up from dir to find the git repo root. Returns null if not in a git repo. */
+function _findGitRootUp(dir) {
+    let current = dir;
+    for (let i = 0; i < 10; i++) {
+        if (!current || current === path.dirname(current)) return null;
+        if (fs.existsSync(path.join(current, '.git'))) return current;
+        current = path.dirname(current);
+    }
+    return null;
 }
 
 /** Detect which module the given file belongs to */
@@ -450,23 +465,46 @@ function runInTerminal(name, command, opts = {}) {
 }
 
 function buildOdooArgs(extra = []) {
-    const cfg = getDbConfig();
-    const args = [
-        `--addons-path=${getFullAddonsPath()}`,
-        `--database=${cfg.database}`,
-        `--db-filter=${cfg.database}`,
-        '--dev=all',
-        `--limit-time-real=${getConfig('limitTimeReal') || 10000}`,
-        `--max-cron-threads=${getConfig('maxCronThreads') ?? 0}`,
-    ];
-    // Pass explicit DB connection args only when set (not from conf file — conf file is passed via -c)
-    if (getConfig('dbHost'))     args.push(`--db_host=${cfg.host}`);
-    if (getConfig('dbPort'))     args.push(`--db_port=${cfg.port}`);
-    if (getConfig('dbUser'))     args.push(`--db_user=${cfg.user}`);
-    if (getConfig('dbPassword')) args.push(`--db_password=${cfg.password}`);
     const cf = getConfigFile();
-    if (cf && fs.existsSync(cf)) args.push('-c', cf);
-    args.push('-s');
+    const hasConf = cf && fs.existsSync(cf);
+    const args = [];
+
+    // Addons path — always pass if configured, overrides conf file value
+    const addonsPath = getFullAddonsPath();
+    if (addonsPath) args.push(`--addons-path=${addonsPath}`);
+
+    if (hasConf) {
+        // Conf file handles db, limits, workers, log settings etc.
+        args.push('-c', cf);
+        // Only override database if user explicitly set it in extension settings
+        // (not read from conf — that would be a no-op duplicate)
+        const dbOverride = getConfig('database');
+        if (dbOverride) {
+            args.push(`--database=${dbOverride}`);
+            args.push(`--db-filter=${dbOverride}`);
+        }
+    } else {
+        // No conf file — build full args from settings
+        const cfg = getDbConfig();
+        if (cfg.database) {
+            args.push(`--database=${cfg.database}`);
+            args.push(`--db-filter=${cfg.database}`);
+        }
+        if (cfg.host)     args.push(`--db_host=${cfg.host}`);
+        if (cfg.port)     args.push(`--db_port=${cfg.port}`);
+        if (cfg.user)     args.push(`--db_user=${cfg.user}`);
+        if (cfg.password) args.push(`--db_password=${cfg.password}`);
+    }
+
+    const extraArgs = getConfig('extraArgs') || [];
+    args.push(...extraArgs);
+    // Inject --logfile if log panel is enabled (only for main server, not build/shell)
+    if (extra.length === 0 || (!extra.includes('--stop-after-init') && !extra.includes('shell'))) {
+        if (getConfig('logPanel.enabled') !== false) {
+            const logFile = getConfig('logPanel.logFile') || '/tmp/odoo-vscode.log';
+            args.push(`--logfile=${logFile}`);
+        }
+    }
     args.push(...extra);
     return args;
 }
@@ -475,7 +513,7 @@ module.exports = {
     // State
     getServerState, setServerState, getServerTerminal, getDebugSession, onServerStateChange,
     // Config
-    getConfig, getWorkspaceRoot, getCommunityPath, getGithubPath, getDatabase, getPort,
+    getConfig, getWorkspaceRoot, getDatabase, getPort,
     getVenvDir, getPythonPath, getOdooBin, resolveOdooBin, getConfigFile,
     getDbConfig, buildPsqlArgs, runPsql, testDbConnection,
     // Addons

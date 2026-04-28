@@ -1,80 +1,107 @@
 # Changelog
 
-## 1.2.0
+## 1.3.0
+
+Major release — complete overhaul of server management, log viewing, UI consistency, and developer workflow features.
+
+### Server Management
+
+- **Starting state** — Sidebar shows `⟳ Starting...` immediately on button press before `startDebugging` resolves. No more wondering if the button registered
+- **Debug toolbar** — When server is active, Run/Debug buttons replaced by a native-style debug toolbar matching VS Code's debugpy floating toolbar. Uses VS Code codicon font for icons
+  - Run mode: Continue/Step buttons disabled (no debugger attached), Restart + Stop active
+  - Debug mode: All 6 buttons active — Continue, Step Over, Step Into, Step Out, Restart, Stop
+  - Starting/Building: all buttons disabled except Stop
+- **`internalConsole` removed** — Reverted to `integratedTerminal` so terminal output is always visible. Focus stolen back to editor after launch via `workbench.action.focusFirstEditorGroup`
+- **Auto-focus log panel** — When first log line arrives from file, log panel is focused automatically (event-driven, no fixed delay)
+- **`suppressDebugView: true`** on all launch configs — Debug Console no longer auto-focuses on session start
+
+### Odoo Logs Panel
+
+New dedicated panel tab at the bottom (next to Terminal/Output) replacing the broken terminal-capture approach:
+
+- **File-based tailing** — Injects `--logfile=/tmp/odoo-vscode.log` into launch args. Uses `fs.watch` (OS inotify) with 100ms debounce — zero polling, zero CPU when idle
+- **Truncated on every server start** — Log file cleared before launch, panel resets
+- **Filter buttons** — ALL / CRITICAL / ERROR / WARNING / INFO / DEBUG
+  - Always colored matching Odoo's own logger colors: CRITICAL=dark red `#c0392b`, ERROR=salmon `#f48771`, WARNING=yellow `#cca700`, INFO=green `#89d185`, DEBUG=blue `#75beff`
+  - Active = filled solid background in level color
+  - Count shown when errors/warnings exist: `ERROR(3)`, `WARN(12)` with underline indicator
+  - CRITICAL and ERROR tracked separately
+- **Structured line parsing** — Each line split into timestamp / level badge / logger / message columns
+- **Traceback grouping** — Consecutive traceback lines collapsed into one clickable group. Click `▶` to expand
+- **Navigate to file** — `File "/path/file.py", line 42` patterns are clickable links → opens file at that line in editor
+- **▲ Err / ▼ Err** — Jump to previous/next ERROR or CRITICAL line
+- **Wrap toggle** — Toggle `white-space: pre-wrap` for long lines. Properly overrides `min-width: max-content` on container
+- **Horizontal scroll** — Lines render at full width, panel scrolls horizontally
+- **Auto-scroll with lock** — Scrolling up auto-locks, button to re-enable
+- **Copy line** — Hover any line → `copy` button appears
+- **3000 line cap** — Oldest lines trimmed automatically, no unbounded DOM growth
+- **Disable option** — `odooDebugger.logPanel.enabled: false` skips `--logfile` injection entirely, zero overhead
+- **Custom log path** — `odooDebugger.logPanel.logFile` setting
+
+### UI — Consistent Button Theme
+
+All buttons across the sidebar panel now use the same dark toolbar aesthetic:
+
+- Same background (`--vscode-debugToolBar-background`), same border, same hover effect
+- All buttons use VS Code **codicon font** (bundled from VS Code installation — no external dependency)
+- Uniform `height: 28px` across toolbar buttons and sidebar action buttons
+- **Color scheme** using VS Code semantic tokens:
+  - Stop: `--vscode-debugIcon-stopForeground`
+  - Restart: `--vscode-debugIcon-restartForeground`
+  - Run: `--vscode-debugIcon-startForeground`
+  - Debug: `#e8c44d` (matches `● Debugging` status bar color)
+  - Step buttons: `--vscode-foreground` (neutral)
+
+### Addons Path Discovery
+
+- **Removed `githubPath` and `communityPath`** settings entirely — simpler setup
+- **Auto-discovery from conf file** — `addons_path` read directly from `.odoorc`. If `addonsPaths` setting is empty, conf file value is used automatically
+- **Workspace scan** — `discoverAllAddonsDirs()` scans workspace root (depth 2) for directories containing modules with `__manifest__.py`
+- **Community addons** — Discovered from `<odooBinPath-dir>/addons` and `<odooBinPath-dir>/odoo/addons`
+- **`--addons-path` always passed on CLI** — Overrides conf file value, ensuring extension-selected paths take priority. Conf file handles everything else (`-c configFile`)
+
+### Changed Modules Detection
+
+- **Staged changes included** — Now runs both `git diff --name-only HEAD` (unstaged) and `git diff --name-only --cached HEAD` (staged)
+- **Workspace root fallback** — If `addonsPaths` is not configured, walks up from workspace root to find git repo. Fixes detection on machines without explicit addons path configuration
+- **`_findGitRootUp`** — Walks up directory tree from each addons path to find git repo root. Works regardless of folder structure
+
+### `buildOdooArgs` — Minimal by Default
+
+- No hardcoded `--dev=all`, `--limit-time-real`, `--max-cron-threads`, `-s`
+- When conf file exists: passes only `--addons-path` + `-c configFile`. Conf file handles everything else
+- When no conf file: builds full args from settings
+- `--database` only added if explicitly set in extension settings (not duplicated from conf)
+- `--logfile` injected automatically when log panel is enabled
+- `extraArgs` setting (default `[]`) — user controls all extra arguments
 
 ### New Features
 
-- **Methods in Model Explorer** — Expand any model to see its methods in a collapsible `Methods (N)` folder (collapsed by default). Click to navigate to definition line
-- **Method type icons** — Icons reflect method type: `@api.depends`/`@api.onchange`/`action_*` → event, `@api.constrains`/`_check_*` → ruler, `@api.model` → class, `@staticmethod` → constant, `@classmethod` → namespace, CRUD overrides → operator, private helpers → property
-- **Field type icons** — Each field shows an icon matching its type: `Char`/`Text`/`Html` → string, `Integer`/`Float`/`Monetary` → number, `Boolean` → boolean, `Date`/`Datetime` → event, `Selection` → enum, `Many2one` → key, `One2many`/`Many2many` → array, `Binary`/`Image` → file
-- **Model type filter** — `$(filter)` button in Model Explorer title bar → filter by Regular / Transient (wizard) / Abstract models. Icons change by type: `symbol-class` / `symbol-interface` / `symbol-namespace`
-- **Inline action buttons** — Hover over any model/field/method row to see icon buttons: model gets XML View + Browser + Browse Records, field gets Find in XML + Browse Values, method gets Find Usages
-- **Find Method Usages** — Right-click any method → grep for `.methodName(` across all Python files → QuickPick with file:line results
-- **SQL Tools filter** — `$(search)` button filters table list by name. `$(clear-all)` appears when filter active. Section label shows match count
-- **Restart Odoo button** — Server section shows `⟳ Restart` alongside `■ Stop` when running or debugging. Uses our own restart (stop + re-launch with same mode and all correct args)
-- **Interpreter selection** — `$(symbol-misc)` icon in sidebar title bar → opens VS Code's standard Python interpreter picker
-- **Community path selection** — `$(folder-library)` icon in sidebar title bar → folder picker to set `odooDebugger.communityPath`
-- **Restart from VS Code toolbar syncs status** — `onDidStartDebugSession` now updates our state badge correctly when session is restarted from VS Code's floating debug toolbar
-
-### Improvements
-
-- **Debug panel no longer auto-switches** when a breakpoint is hit — `workbench.debug.openDebug` set to `neverOpen` while extension is active, restored on deactivate. Floating toolbar still works normally
-- **Changed modules validation** — `getChangedModules()` now validates each module name has a `__manifest__.py` before including it. No more false positives from deleted files or non-module dirs. Uses `git diff --name-only HEAD`
-- **odoo-bin multi-version support** — Scans workspace for all `odoo-bin` files. If multiple found, shows QuickPick to select. Validates file is executable. Saves selection to `odooBinPath`
-- **Switch Database works without SQL** — Always shows "Enter database name manually..." option. Falls back to input box if psql unreachable
-- **DB connection test** — Now connects to `postgres` maintenance DB instead of configured DB, so it works even if target DB doesn't exist yet
-- **Database default removed** — No longer defaults to `odoo18`. Forces explicit configuration to avoid accidentally connecting to wrong DB
-- **Model Explorer community default** — Community addons included in scan by default. Uncheck in Configure Sources if not needed
-- **Model Explorer addons source picker** — "Browse for folder..." option added. Shows currently configured custom paths not in auto-discovered list
-- **Field XML search — views only** — Searches only inside `<record model="ir.ui.view">` blocks, skips `data/`, `demo/`, `security/` directories. No more data record noise
-- **Model XML search — views only** — Searches for `<field name="model">modelName</field>` pattern, only returns actual view definitions
-- **Data browser search** — Fixed to use `%term%` (contains match) instead of `term%` (starts-with)
-- **Right-click context menu** — All editor context commands now have proper `when` conditions (`.py` only for model/function nav, `.py`+`.xml` for XML ID/toggle). Added `gotoFunctionDefAll` and `currentModuleInfo` to context menu
-- **Interpreter detection simplified** — Uses VS Code Python extension API directly. No more filesystem scanning for venvs
+- **Copy Model Name** — Right-click any model in Model Explorer → copies `res.partner` to clipboard. Also available as inline icon button. Status bar flashes confirmation
+- **Open Config File** — Gear icon in sidebar title bar opens `.odoorc` directly in editor. Also available as "Config" button in Tools section
+- **`debugOptions` setting** — Object spread directly into debugpy launch config. Default `{justMyCode: false, subProcess: false}`. User can add any valid debugpy key
 
 ### Bug Fixes
 
-- Debug controls (step/continue) no longer show after debug session ends when switching back to panel
-- `ORDER BY id DESC` removed from data browser queries — works with tables that have no `id` column
+- **`getGithubPath` removed** — Was exported but function deleted, causing `utils.js` module load crash that broke all tree views ("There is no data provider registered")
+- **`_findGitRepos` removed** — Dead code after `_findGitRootUp` replaced it
+- **logPanel.js template literal** — Regex character class `}` inside `<script>` in template literal caused silent JS syntax error crashing entire extension module on load. Rewrote HTML generation as plain string concatenation
+- **Traceback toggle onclick** — Nested quotes in `onclick="this.parentNode.classList.toggle('open')"` inside HTML string broke webview JS. Replaced with named function `toggleTb(el)`
+- **Codicon icons showing squares** — Icon unicode chars rendered in body font. Fixed by wrapping all icons in `<span class="ic">` with `font-family: codicon`
+- **Filter button active state invisible** — Active class was overriding colored text to `--vscode-button-foreground` (white), making text invisible. Fixed to use solid filled background per level color
+- **Wrap not working** — `#log` had `white-space: nowrap` overriding `.lm` pre-wrap. Added `#log.wrap { white-space: normal }` and `#log.wrap .ln { min-width: unset }`
+- **ERROR color wrong** — `--vscode-editorError-foreground` resolved to dark red in some themes, same as CRITICAL. Hardcoded `#f48771` for ERROR everywhere
+- **Port polling removed** — Replaced 5×200ms polling loop with fixed 500ms delay. No `net` module needed
+- **`django: true` removed** from `_buildModule` launch config
+
+## 1.2.x
+
+- Quick Find button renamed, addons/community path selection fixed, `getFullAddonsPath()` existence check
 
 ## 1.1.0
 
-### New Features
-- **Model Explorer** — Tree view of all models from custom addons. Merged `_name`/`_inherit` sources, lazy field loading, click to navigate to exact definition line
-- **Cursor Auto-Reveal** — Moving cursor in `.py` or `.xml` files auto-highlights the matching model in Model Explorer
-- **XML Outline** — VS Code Outline panel shows all `<record>`, `<template>`, `<menuitem>` IDs in XML files
-- **XML Hover** — Hover over `model="..."` or `ref="..."` in XML for definition info
-- **Model → XML Navigation** — Right-click model → find all XML views, grouped by same-module / other addons with exact line navigation
-- **Field → XML Navigation** — Right-click field → find all XML usages across addons
-- **Data Browser** — Browse model records or field values from the DB in a full editor tab. Sortable columns, search/filter, custom SQL bar, open record in Odoo
-- **SQL Tools** — Tree view with Tables (lazy-loaded), Query History. Run SQL (`Ctrl+Shift+Q`), browse any table, show columns, copy SELECT statement
-- **Breakpoints Tree** — Dedicated tree view with enable/disable/remove per breakpoint, Enable All / Disable All / Clear All
-- **DB Config from Conf File** — Auto-reads `db_name`, `db_host`, `db_port`, `db_user`, `db_password` from `.odoorc` / conf file. Explicit settings override
-- **DB Connection Test** — Warns on startup if PostgreSQL connection fails with link to settings
-- **odoo-bin Auto-Detection** — Searches workspace up to depth 3. Prompts with Browse/Enter Path if not found, saves to settings
-- **Manage Addons Paths** — Now includes "Browse for folder..." option for custom directories not in auto-discovered list
-- **Interpreter Detection** — Uses VS Code's selected Python interpreter directly via Python extension API
-
-### Improvements
-- Debug controls (Continue/Step/Stop) now only show when server state is `debugging`
-- Breakpoints panel moved to bottom of activity bar panel
-- `switchDatabase` and `manageAddonsPaths` shown as icon-only buttons in panel title bar
-- All psql calls use unified `buildPsqlArgs()` with host/port/user/password support
-
-### Keyboard Shortcuts (updated)
-- `Ctrl+Shift+D` — Debug Odoo
-- `Ctrl+Shift+I` — Install Module
-- `Ctrl+Shift+B` — Open in Browser
-- `Ctrl+Shift+O` — Open Shell
-- `Ctrl+Shift+Q` — Run SQL
-- `Ctrl+Shift+.` — Go to Function Def
+- Model Explorer, Cursor Auto-Reveal, XML Outline, XML Hover, Data Browser, SQL Tools, Breakpoints Tree, DB Config from Conf File
 
 ## 1.0.0
 
-### Features
-- Server Management — Run, Debug, Stop Odoo
-- Module Management — Update, Install, Uninstall, Scaffold
-- Code Navigation — Toggle Model/View, Go to Model/XML ID/Function Definition
-- Log Filtering — Filter terminal output by level
-- JS Debugging — Chrome debug port with auto pathMapping
-- Database Switcher, Utilities, Keyboard Shortcuts
+- Server Management, Module Management, Code Navigation, Log Filtering, JS Debugging, Database Switcher

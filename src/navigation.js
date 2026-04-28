@@ -260,7 +260,7 @@ async function currentModuleInfo() {
                 pythonPath: pythonPath,
                 args,
                 console: 'integratedTerminal',
-                env: { VIRTUAL_ENV: utils.getVenvDir() || '' },
+                // VIRTUAL_ENV not set — debugpy uses the python path directly, setting VIRTUAL_ENV triggers activation scripts
             }, { noDebug: true, suppressDebugToolbar: true, suppressDebugStatusbar: true, suppressDebugView: true });
         }
     }

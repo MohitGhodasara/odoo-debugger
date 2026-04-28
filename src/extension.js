@@ -4,7 +4,8 @@ const navigation = require('./navigation');
 const utilities = require('./utilities');
 const logViewer = require('./logViewer');
 const { OdooSidebarProvider } = require('./sidebarPanel');
-const { ModelExplorerProvider, FieldItem, ModelItem, OdooXmlSymbolProvider, OdooXmlHoverProvider, gotoLocation, openModelInBrowser, gotoXmlView, gotoFieldXml, findMethodUsages, searchModels, configureSources, filterModelType, CTX_FILTER_ACTIVE } = require('./modelExplorer');
+const { OdooLogPanelProvider } = require('./logPanel');
+const { ModelExplorerProvider, FieldItem, ModelItem, OdooXmlSymbolProvider, OdooXmlHoverProvider, gotoLocation, openModelInBrowser, gotoXmlView, gotoFieldXml, findMethodUsages, searchModels, configureSources, filterModelType, sortModels, toggleGroupByModule, quickFind, CTX_FILTER_ACTIVE } = require('./modelExplorer');
 const { BreakpointExplorerProvider, gotoBreakpoint, toggleBreakpoint, removeBreakpoint, enableAllBreakpoints, disableAllBreakpoints, clearAllBreakpoints } = require('./breakpointExplorer');
 const { SqlToolsProvider, CTX_SQL_FILTER, runSql, filterTables, browseTable, showTableColumns, copySelectStatement } = require('./sqlTools');
 const dataBrowser = require('./dataBrowser');
@@ -62,16 +63,29 @@ function activate(context) {
 
     // Breakpoint Explorer tree view
     const bpExplorer = new BreakpointExplorerProvider();
-    context.subscriptions.push(
-        vscode.window.registerTreeDataProvider('odooDebugger.breakpoints', bpExplorer)
-    );
+    const bpView = vscode.window.createTreeView('odooDebugger.breakpoints', {
+        treeDataProvider: bpExplorer,
+        showCollapseAll: false,
+    });
+    context.subscriptions.push(bpView);
     vscode.commands.executeCommand('setContext', CTX_FILTER_ACTIVE, false);
     vscode.commands.executeCommand('setContext', CTX_SQL_FILTER, false);
 
     // SQL Tools tree view
     const sqlToolsProvider = new SqlToolsProvider(context);
+    const sqlView = vscode.window.createTreeView('odooDebugger.sqlTools', {
+        treeDataProvider: sqlToolsProvider,
+        showCollapseAll: false,
+    });
+    context.subscriptions.push(sqlView);
+
+    // Log Panel (bottom panel)
+    const logPanelProvider = new OdooLogPanelProvider(context);
+    logViewer.setPanel(logPanelProvider, vscode);
     context.subscriptions.push(
-        vscode.window.registerTreeDataProvider('odooDebugger.sqlTools', sqlToolsProvider)
+        vscode.window.registerWebviewViewProvider('odooDebugger.logPanel', logPanelProvider, {
+            webviewOptions: { retainContextWhenHidden: true }
+        })
     );
 
     // Register all commands
@@ -83,11 +97,37 @@ function activate(context) {
         'odooDebugger.restartOdoo': server.restartOdoo,
         'odooDebugger.openShell': server.openShell,
         // Logs
-        'odooDebugger.logFilterAll': () => { logViewer.setFilter('ALL'); logViewer.startTailing(); sidebarProvider.refresh(); },
-        'odooDebugger.logFilterError': () => { logViewer.setFilter('ERROR'); logViewer.startTailing(); sidebarProvider.refresh(); },
-        'odooDebugger.logFilterWarning': () => { logViewer.setFilter('WARNING'); logViewer.startTailing(); sidebarProvider.refresh(); },
-        'odooDebugger.logFilterInfo': () => { logViewer.setFilter('INFO'); logViewer.startTailing(); sidebarProvider.refresh(); },
-        'odooDebugger.logFilterDebug': () => { logViewer.setFilter('DEBUG'); logViewer.startTailing(); sidebarProvider.refresh(); },
+        'odooDebugger.openLogPanel': () => vscode.commands.executeCommand('odooDebugger.logPanel.focus'),
+        'odooDebugger.modelExplorer.copyModelName': (item) => {
+            const name = item?.modelName || item?.label;
+            if (name) {
+                vscode.env.clipboard.writeText(name);
+                vscode.window.setStatusBarMessage(`Copied: ${name}`, 2000);
+            }
+        },
+        'odooDebugger.openConfFile': async () => {
+            const cf = utils.getConfigFile();
+            if (!cf) {
+                vscode.window.showWarningMessage('No config file configured. Set odooDebugger.configFile in settings.');
+                return;
+            }
+            const fs = require('fs');
+            if (!fs.existsSync(cf)) {
+                vscode.window.showWarningMessage(`Config file not found: ${cf}`);
+                return;
+            }
+            const doc = await vscode.workspace.openTextDocument(cf);
+            await vscode.window.showTextDocument(doc);
+        },
+        'odooDebugger.logPanel.gotoFile': async (file, line) => {
+            try {
+                const doc = await vscode.workspace.openTextDocument(file);
+                const editor = await vscode.window.showTextDocument(doc);
+                const pos = new vscode.Position(Math.max(0, (parseInt(line) || 1) - 1), 0);
+                editor.selection = new vscode.Selection(pos, pos);
+                editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+            } catch (_) {}
+        },
         // JS Debug
         'odooDebugger.launchChromeDebug': server.launchChromeDebug,
         'odooDebugger.attachJsDebugger': server.attachJsDebugger,
@@ -120,28 +160,30 @@ function activate(context) {
         'odooDebugger.switchDatabase': utilities.switchDatabase,
         'odooDebugger.openSettings': () => vscode.commands.executeCommand('workbench.action.openSettings', 'odooDebugger'),
         'odooDebugger.selectInterpreter': () => vscode.commands.executeCommand('python.setInterpreter'),
-        'odooDebugger.selectCommunityPath': async () => {
-            const uris = await vscode.window.showOpenDialog({
-                title: 'Select Odoo Community Folder',
-                canSelectFiles: false, canSelectFolders: true, canSelectMany: false,
-                defaultUri: vscode.Uri.file(utils.getCommunityPath()),
-            });
-            if (uris && uris[0]) {
-                await vscode.workspace.getConfiguration('odooDebugger').update('communityPath', uris[0].fsPath, vscode.ConfigurationTarget.Workspace);
-                vscode.window.showInformationMessage(`Community path set to: ${uris[0].fsPath}`);
-                sidebarProvider.refresh();
-            }
-        },
+        'odooDebugger.selectCommunityPath': () => vscode.commands.executeCommand('odooDebugger.manageAddonsPaths'),
         // Model Explorer
         'odooDebugger.refreshModelExplorer': () => modelExplorer.refresh(),
         'odooDebugger.modelExplorer.goto': gotoLocation,
         'odooDebugger.modelExplorer.gotoXmlView': (item) => gotoXmlView(item),
         'odooDebugger.modelExplorer.openInBrowser': (item) => openModelInBrowser(item),
-        'odooDebugger.modelExplorer.gotoFieldXml': (item) => gotoFieldXml(item),
+        'odooDebugger.modelExplorer.gotoFieldXml': (item) => {
+            // Look up model name from cache by matching field filePath+name
+            let modelName = '';
+            for (const [mn, srcs] of modelExplorer._getCache()) {
+                if (srcs.some(s => s.fields.some(f => f.name === item.field.name && f.filePath === item.field.filePath))) {
+                    modelName = mn; break;
+                }
+            }
+            gotoFieldXml(item, modelName);
+        },
         'odooDebugger.modelExplorer.findMethodUsages': (item) => findMethodUsages(item),
         'odooDebugger.modelExplorer.search': () => searchModels(modelExplorer),
         'odooDebugger.modelExplorer.clearFilter': () => modelExplorer.clearFilter(),
         'odooDebugger.modelExplorer.filterType': () => filterModelType(modelExplorer),
+        'odooDebugger.modelExplorer.sortModels': () => sortModels(modelExplorer),
+        'odooDebugger.modelExplorer.toggleGroupByModule': () => toggleGroupByModule(modelExplorer),
+        'odooDebugger.quickFind': () => quickFind(() => modelExplorer._getCache()),
+        'odooDebugger.focusPanel': () => vscode.commands.executeCommand('workbench.view.extension.odoo-dev'),
         'odooDebugger.modelExplorer.configureSources': async () => { await configureSources(); modelExplorer.refresh(); },
         // Breakpoints
         'odooDebugger.breakpoints.goto': gotoBreakpoint,
@@ -191,7 +233,6 @@ function activate(context) {
         vscode.window.onDidCloseTerminal(terminal => {
             if (terminal === utils.getServerTerminal()) {
                 utils.setServerState('stopped', null);
-                logViewer.stopTerminalCapture();
             }
         })
     );
@@ -201,7 +242,7 @@ function activate(context) {
         vscode.debug.onDidTerminateDebugSession(session => {
             if (session.name === 'Debug Odoo' || session.name === 'Run Odoo' || session === utils.getDebugSession()) {
                 utils.setServerState('stopped', null);
-                logViewer.stopTerminalCapture();
+                logViewer.onServerStop();
             }
             // Auto-restart after build completes
             if (session.name === 'Odoo Build') {
@@ -213,28 +254,27 @@ function activate(context) {
         })
     );
 
-    // Start terminal log capture when server state changes to running
+    // Start log panel tailing when server starts
     utils.onServerStateChange(state => {
-        if (state === 'running') {
-            logViewer.clearCaptured();
-            logViewer.startTerminalCapture();
-        }
+        if (state === 'running' || state === 'debugging') logViewer.onServerStart();
+        else if (state === 'stopped') logViewer.onServerStop();
     });
 
-    // Config change listener — odooDebugger settings + python interpreter
+    // Config change listener — odooDebugger settings + python interpreter (all strategies)
     context.subscriptions.push(
         vscode.workspace.onDidChangeConfiguration(e => {
-            if (e.affectsConfiguration('odooDebugger') || e.affectsConfiguration('python.defaultInterpreterPath') || e.affectsConfiguration('python.pythonPath')) {
+            if (e.affectsConfiguration('odooDebugger') || e.affectsConfiguration('python')) {
                 utilities.updateStatusBar();
                 sidebarProvider.refresh();
             }
         })
     );
 
-    // Python extension interpreter change event (ms-python.python >= 2023.x)
+    // Python extension interpreter change event — multiple strategies for different versions
     try {
         const pyExt = vscode.extensions.getExtension('ms-python.python');
         if (pyExt) {
+            // Strategy 1: ms-python >= 2023.x environments API
             const onEnvChanged = pyExt.exports?.environments?.onDidChangeActiveEnvironmentPath
                 ?? pyExt.exports?.onDidChangeActiveEnvironmentPath;
             if (onEnvChanged) {
@@ -247,6 +287,14 @@ function activate(context) {
             }
         }
     } catch (_) {}
+
+    // Strategy 3: re-check interpreter when any terminal opens (user may have switched)
+    context.subscriptions.push(
+        vscode.window.onDidOpenTerminal(() => {
+            utilities.updateStatusBar();
+            sidebarProvider.refresh();
+        })
+    );
 
     // Prevent VS Code from auto-switching to Debug panel when a breakpoint is hit.
     // workbench.debug.openDebug only controls panel auto-reveal — does NOT affect the floating toolbar.
@@ -289,7 +337,7 @@ function activate(context) {
     // Cleanup on deactivate
     context.subscriptions.push({ dispose: () => logViewer.dispose() });
 
-    console.log('Odoo Debugger v1.2.0 activated');
+    console.log('Odoo Debugger v1.3.5 activated');
 }
 
 function deactivate() {

@@ -1,19 +1,123 @@
 # Odoo Debugger
 
-All-in-one Odoo development toolkit for VS Code. Run, debug, update modules, explore models, browse database records, navigate code, and manage your entire Odoo workflow — all from a single activity bar panel.
+Your Odoo development workflow, entirely inside VS Code. Run and debug the server, watch live logs with filtering, update modules, explore models and fields, browse database records — without leaving your editor or touching a terminal.
+
+---
+
+## Setup Guide
+
+### Step 1 — Install the extension
+
+Install from the VS Code marketplace. `ms-python.debugpy` is automatically installed as a dependency.
+
+---
+
+### Step 2 — Select Python interpreter
+
+Press `Ctrl+Shift+P` → **Python: Select Interpreter** → pick your Odoo virtualenv (e.g. `/home/user/envs/odoo18-env/bin/python`).
+
+The extension reads the interpreter automatically from VS Code's Python extension — no separate setting needed.
+
+---
+
+### Step 3 — Point to your Odoo conf file *(recommended)*
+
+If you have an `.odoorc` or `odoo.conf` file, set it once and everything else is auto-configured:
+
+```json
+"odooDebugger.configFile": "/path/to/.odoorc"
+```
+
+The extension reads `db_name`, `db_host`, `db_port`, `db_user`, `db_password`, `addons_path`, and `http_port` directly from the conf file. You don't need to set any of those separately.
+
+> **Without a conf file:** Set `odooDebugger.database` to your DB name manually.
+
+---
+
+### Step 4 — Configure addons paths
+
+Click the **folder icon** in the Odoo Debugger panel title bar → **Manage Addons Paths**.
+
+Select **all** directories you want Odoo to load modules from — including community addons if needed. The picker shows paths discovered from your conf file, workspace, and `odoo-bin` location as suggestions, but nothing is included automatically.
+
+```json
+"odooDebugger.addonsPaths": [
+    "/path/to/odoo/community/addons",
+    "/path/to/custom-addons"
+]
+```
+
+> If your conf file already has `addons_path` set with all the paths you need, this step is optional — the extension reads it automatically as a fallback when `addonsPaths` is empty.
+
+---
+
+### Step 5 — Run Odoo
+
+Press `Ctrl+Shift+R` or click **▶ Run** in the panel.
+
+The launch command is built automatically:
+```
+odoo-bin --addons-path=... -c /path/to/.odoorc
+```
+
+When the server starts writing logs, the **Odoo Logs** panel opens automatically at the bottom.
+
+---
+
+### Optional — Disable the log panel
+
+The log panel injects `--logfile` into every launch. If you prefer to use the terminal output only, disable it:
+```json
+"odooDebugger.logPanel.enabled": false
+```
+
+When disabled: no `--logfile` argument is added, zero overhead, terminal behaves as normal.
+
+---
+
+### Optional — Extra launch arguments
+
+Add any odoo-bin arguments via `extraArgs`:
+```json
+"odooDebugger.extraArgs": ["--dev=all", "--workers=0"]
+```
+
+Default is empty — the conf file handles everything.
+
+---
+
+### Optional — Database connection (without conf file)
+
+```json
+"odooDebugger.database":   "odoo18",
+"odooDebugger.dbHost":     "localhost",
+"odooDebugger.dbPort":     "5432",
+"odooDebugger.dbUser":     "odoo",
+"odooDebugger.dbPassword": "odoo"
+```
+
+---
+
+### Optional — JS debugging
+
+Chrome is auto-detected. If not found:
+```json
+"odooDebugger.chromePath": "/usr/bin/google-chrome"
+```
 
 ---
 
 ## Panel Layout
 
-The extension adds an **Odoo Debugger** icon to the activity bar with four sections:
+The extension adds an **Odoo Debugger** icon to the activity bar with these sections:
 
 | Section | Purpose |
 |---|---|
 | **Odoo Debugger** | Server controls, module actions, logs, tools |
-| **Model Explorer** | Browse all models, fields, and methods — navigate to definitions |
+| **Model Explorer** | Browse all models, fields, methods — navigate to definitions |
 | **SQL Tools** | Browse tables, run queries, view history |
 | **Breakpoints** | Manage all breakpoints in one place |
+| **Odoo Logs** | Live log panel at the bottom (next to Terminal) |
 
 ---
 
@@ -21,237 +125,196 @@ The extension adds an **Odoo Debugger** icon to the activity bar with four secti
 
 ### Server Management
 
-- **Run Odoo** (`Ctrl+Shift+R`) — Start server via debugpy with `noDebug` mode (no debug panel clutter)
-- **Debug Odoo** (`Ctrl+Shift+D`) — Full debugpy session with breakpoints active. Floating toolbar still shows
-- **Stop Odoo** (`Ctrl+Shift+S`) — Stop running or debugging server
-- **Restart Odoo** — Stops and re-launches in the same mode (Run or Debug) with all correct args
+- **Run** (`Ctrl+Shift+R`) — Starts Odoo via debugpy in noDebug mode. Logs go to the Odoo Logs panel
+- **Debug** (`Ctrl+Shift+D`) — Full debugpy session with breakpoints active
+- **Stop** (`Ctrl+Shift+S`) — Stops the running server
+- **Restart** — Stops and re-launches in the same mode (Run or Debug)
+- **Starting...** state — Sidebar shows `⟳ Starting...` immediately on button press so you know it registered
+- When server is active, the Run/Debug buttons are replaced by a **debug toolbar** matching VS Code's native debugpy toolbar style:
+  - Run mode: Continue/Step buttons disabled (no debugger), Restart + Stop active
+  - Debug mode: All 6 buttons active — Continue, Step Over, Step Into, Step Out, Restart, Stop
 - Auto-stops server before update/install, auto-restarts after build completes
-- Status badge in panel header: `▶ Running` / `● Debugging` / `► Building...` / `■ Stopped`
-- Status bar item shows current DB and server state, click to switch database
-- Restarting from VS Code's floating debug toolbar correctly syncs the status badge
-- Debug panel does not auto-switch when a breakpoint is hit — stays on your current view
+- Status badge: `▶ Running` / `● Debugging` / `⟳ Starting...` / `► Building...` / `■ Stopped`
+
+### Log Panel (Odoo Logs)
+
+A dedicated panel tab at the bottom (next to Terminal/Output) that tails the Odoo log file in real time:
+
+- **Auto-opens** when the first log line arrives — no manual action needed
+- **Filter buttons** — ALL / CRITICAL / ERROR / WARNING / INFO / DEBUG
+  - Always colored: CRITICAL=dark red, ERROR=salmon, WARNING=yellow, INFO=green, DEBUG=blue
+  - Active filter = filled solid background
+  - Count shown on button when errors/warnings exist: `ERROR(3)`, `WARN(12)`
+- **Search** — Live search with highlight. Filters visible lines as you type
+- **▲ Err / ▼ Err** — Jump to previous/next ERROR or CRITICAL line
+- **Wrap** — Toggle line wrapping for long SQL/XML lines
+- **⬇ Auto / ⏸ Locked** — Auto-scroll toggle. Scrolling up auto-locks
+- **Traceback grouping** — Consecutive traceback lines collapsed into one clickable group showing the last line (the actual error). Click `▶` to expand
+- **Navigate to file** — `File "/path/file.py", line 42` in tracebacks are clickable links → opens file at that line
+- **Copy line** — Hover any line → `copy` button appears
+- **Log colors** match Odoo's own logger:
+  - CRITICAL: white text on dark red background
+  - ERROR: salmon `#f48771`
+  - WARNING: yellow `#cca700`
+  - INFO: green `#89d185`
+  - DEBUG: blue `#75beff`
+- **Truncated on restart** — Log file cleared on every server start, panel resets
+- **Disable** — Set `odooDebugger.logPanel.enabled: false` for zero overhead (no `--logfile` injected)
+- **Custom log path** — `odooDebugger.logPanel.logFile` (default `/tmp/odoo-vscode.log`)
 
 ### Module Management
 
-- **Update Module** (`Ctrl+Shift+U`) — QuickPick with git-changed modules shown first (validated against `__manifest__.py`)
-- **Install Module** (`Ctrl+Shift+I`) — Same picker, runs `--init`
-- **Update Changed** (`Ctrl+Shift+G`) — Auto-detects modules with uncommitted git changes across all repos
-- **Uninstall Module** — Opens Odoo shell with the uninstall command pre-filled
-- **Scaffold New Module** — Generates full module structure: manifest, model, views, security CSV, menu items
-- **Manage Addons Paths** — Multi-select from auto-discovered dirs + browse for any custom folder
-
-### Navigation
-
-- **Toggle Py ↔ XML** (`Ctrl+Shift+T`) — Jump between model file and its views XML
-- **Go to Model** (`Ctrl+Shift+M`) — Find `_name = 'model.name'` definition from word under cursor
-- **Go to XML ID** (`Ctrl+Shift+X`) — Find `id="xml_id"` in XML files from word under cursor
-- **Go to Function Def** (`Ctrl+Shift+.`) — Find original function definition, skipping `super()` overrides
-- **Go to All Definitions** — Shows all definitions of a function in a QuickPick
-- **Current Module Info** — Shows module name, version, depends, DB state
-- All navigation commands work on **word under cursor** — no text selection needed
-- Right-click context menu shows relevant commands based on file type (`.py` or `.xml`)
+- **Update** (`Ctrl+Shift+U`) — QuickPick with git-changed modules shown first
+- **Install** (`Ctrl+Shift+I`) — Same picker, runs `--init`
+- **Changed** (`Ctrl+Shift+G`) — Auto-detects modules with uncommitted or staged git changes. Works with flat repos (`module/file.py`) and nested repos (`addons/module/file.py`). Falls back to workspace root if no addons paths configured
+- **Uninstall** — Opens Odoo shell with uninstall command pre-filled
+- **Scaffold** — Generates full module: manifest, model, views (form/tree/search), security CSV, menu, action
 
 ### Model Explorer
 
-A tree view showing all models from your configured addons directories:
+Tree view showing all models from your configured addons:
 
-**Models:**
 - **Merged inheritance** — `_name` and `_inherit` sources merged into one node per model
-- **Model type icons** — `symbol-class` for regular, `symbol-interface` for TransientModel (wizards), `symbol-namespace` for AbstractModel
-- **Filter by type** — `$(filter)` button → filter by Regular / Transient / Abstract
-- **Cursor auto-reveal** — Moving cursor in `.py` or `.xml` automatically highlights the matching model (debounced 300ms)
-- **Search / Filter** — `$(search)` button → filter by model name or module name
-- **Community addons included by default** — uncheck in Configure Sources if not needed
-- **Configure Sources** — `$(settings-gear)` button → multi-select addons dirs + browse for custom folders
+- **Model type icons** — Regular / TransientModel (wizard) / AbstractModel
+- **Filter by type** — `$(filter)` button
+- **Sort** — Alphabetical or Recently Modified
+- **Group by module** — Toggle grouped/flat view
+- **Cursor auto-reveal** — Moving cursor in `.py` or `.xml` highlights matching model/field/method
+- **Copy Model Name** — Right-click any model → copies `res.partner` to clipboard. Also available as inline icon button
 
 **Fields** (expand model):
-- Type-specific icons: `Char`/`Text`/`Html` → string, `Integer`/`Float`/`Monetary` → number, `Boolean` → boolean, `Date`/`Datetime` → event, `Selection` → enum, `Many2one` → key, `One2many`/`Many2many` → array, `Binary`/`Image` → file
-- Click to navigate to exact field definition line
+- Type-specific icons, click to navigate to definition
+- Inline: Find in XML, Browse Values
 
-**Methods** (collapsible folder, collapsed by default):
-- Decorator-aware icons: `@api.depends`/`@api.onchange`/`action_*` → event, `@api.constrains` → ruler, `@api.model` → class, `@staticmethod` → constant, CRUD overrides → operator, private helpers → property
-- Description shows decorator (e.g. `@api.depends`) when present
-- Click to navigate to method definition
+**Methods** (collapsible folder):
+- Decorator-aware icons, click to navigate
+- Inline: Find Usages
 
-**Inline action buttons** (appear on hover):
-- Model row: `$(file-code)` Go to XML View, `$(globe)` Open in Browser, `$(table)` Browse Records
-- Field row: `$(search)` Find in XML, `$(table)` Browse Values
-- Method row: `$(references)` Find Usages
+**Right-click model:** Go to XML View, Open in Browser, Browse Records, Copy Model Name
 
-**Right-click model:**
-- Go to XML View — finds all `ir.ui.view` records for this model, grouped by same-module / other addons
-- Open in Odoo Browser — opens list view
-- Browse Records — opens data browser
+**Right-click field:** Find in XML, Browse Field Values
 
-**Right-click field:**
-- Find Field in XML — finds `<field name="...">` inside `ir.ui.view` records only (skips data/demo files)
-- Browse Field Values — opens data browser for that field
+**Right-click method:** Find Method Usages
 
-**Right-click method:**
-- Find Method Usages — greps for `.methodName(` across all Python files → QuickPick results
+### Quick Find (`Ctrl+Alt+N`)
 
-### XML Features
+Live search picker with compound syntax:
 
-- **Document Symbols (Outline panel)** — All `<record id="...">`, `<template id="...">`, `<menuitem id="...">` entries in VS Code's Outline panel
-- **Hover tooltips** — Hover over `model="res.partner"` to see which modules define/inherit it. Hover over `ref="..."` for XML ID info
+| Input | Result |
+|---|---|
+| `res.partner` | Models matching name |
+| `@name` | Models with field starting with `name` |
+| `#action` | Models with method starting with `action` |
+| `:sale` | Models from module `sale` |
+| `res.partner@name` | Fields in `res.partner` only |
+| `res.partner#action` | Methods in `res.partner` only |
+
+### Navigation
+
+- **Toggle Py ↔ XML** (`Ctrl+Shift+T`) — Jump between model `.py` and `_views.xml`
+- **Go to Model** (`Ctrl+Shift+M`) — Find `_name = 'model.name'` from word under cursor
+- **Go to XML ID** (`Ctrl+Shift+X`) — Find `id="xml_id"` from word under cursor
+- **Go to Function Def** (`Ctrl+Shift+.`) — Find original definition, skipping `super()` overrides
+- **Go to All Definitions** — All definitions in a QuickPick
+- **Current Module Info** — Shows module name, version, depends from manifest
 
 ### Data Browser
 
-Opens a full editor tab with an interactive table:
+Interactive table in an editor tab:
 
-- **Browse Model Records** — Smart column selection (skips binary blobs, picks up to 12 useful columns)
-- **Browse Field Values** — Shows field values for non-null records
-- **SQL Result viewer** — Used by SQL Tools for query results
-- **Sortable columns** — Click any column header to sort ascending/descending
-- **Search bar** — Contains match (`%term%`) WHERE filter
-- **Custom SQL bar** — Edit and run any SQL directly, press Enter to execute
-- **Open in Odoo** — Row action button opens that record's form view in browser
-- **Copy cell** — Double-click any cell to copy its value to clipboard
+- Browse model records or field values from DB
+- Sortable columns, `%term%` search, custom SQL bar
+- Open in Odoo (form view), copy cell on double-click
 
 ### SQL Tools
 
-A tree view with two collapsed sections:
-
-- **Tables** — Lists all public tables. `$(search)` filter by name, section label shows match count. Click to browse, right-click for:
-  - Browse Table, Show Columns (pick to copy name), Copy SELECT Statement
-- **History** — Last 20 SQL queries, click to re-run
-- **Title bar:** `$(play)` Run SQL, `$(search)` Filter Tables, `$(refresh)` Refresh, `$(trash)` Clear History
-- **Run SQL** (`Ctrl+Shift+Q`) — Input box → result in data browser
-
-### Log Filtering
-
-- Captures output directly from the integrated terminal — no log file needed
-- Filter levels: `ALL | ERROR | WARNING | INFO | DEBUG`
-- Filter persists across server restarts
-
-### Breakpoints
-
-A dedicated tree view (collapsed by default, at the bottom of the panel):
-
-- Shows all source breakpoints with filename, line number, and condition if set
-- Enabled: filled red circle. Disabled: outline circle
-- Click to navigate to the breakpoint location
-- **Right-click:** Enable/Disable toggle, Remove
-- **Title bar:** Enable All (`$(check-all)`), Disable All (`$(circle-slash)`), Clear All (`$(trash)`)
-
-### Debug Controls
-
-When server state is `debugging`, a Debug section appears in the sidebar with:
-Continue (`F5`), Step Over (`F10`), Step Into (`F11`), Step Out (`⇧F11`), Stop
-
-### JS Debugging
-
-- **Launch Chrome Debug** — Opens Chrome with remote debugging port, navigates to Odoo with `?debug=assets`
-- **Attach JS Debugger** — Attaches VS Code to Chrome, auto-generates `pathMapping` for all custom addons
+- **Tables** — All public tables, filterable. Browse, show columns, copy SELECT
+- **History** — Last 20 queries, click to re-run
+- **Run SQL** (`Ctrl+Shift+Q`) — Result in data browser
 
 ### Database Tools
 
-- **Switch Database** — Lists all PostgreSQL databases + manual entry option (works even without psql connection)
-- **Copy Database** — `createdb -T source newname`, switches to new DB automatically
-- **Drop Database** — With confirmation dialog
-- **Clear Asset Bundles** — Deletes `ir_attachment` records for `/web/assets/*`
-- **Open Odoo** (`Ctrl+Shift+B`) — Opens `http://localhost:<port>/odoo`
-- **Open Apps** — Opens module list in debug mode
-- **Debug Mode URL** — Opens with `?debug=assets`
+- **Switch Database** — Lists all PostgreSQL DBs + manual entry
+- **Copy Database** — `createdb -T source newname`
+- **Drop Database** — With confirmation
+- **Clear Asset Bundles** — Deletes `/web/assets/*` attachments
+- **Open Odoo** (`Ctrl+Shift+B`), **Open Apps**, **Debug Mode URL**
 
 ### Odoo Shell (`Ctrl+Shift+O`)
 
-Opens an interactive Odoo shell session via debugpy in the integrated terminal.
+Interactive Odoo shell via debugpy in the integrated terminal.
 
----
+### Open Config File
 
-## Sidebar Title Bar Icons
+Click the gear icon in the sidebar title bar to open your `.odoorc` directly in the editor.
 
-The "Odoo Debugger" panel header has these icon buttons:
+### JS Debugging
 
-| Icon | Action |
-|---|---|
-| `$(database)` | Switch Database |
-| `$(folder)` | Manage Addons Paths |
-| `$(symbol-misc)` | Select Python Interpreter (opens VS Code's interpreter picker) |
-| `$(folder-library)` | Select Community Path (folder picker) |
-| `$(settings-gear)` | Open Settings (filtered to `odooDebugger`) |
+- **Launch Chrome Debug** — Opens Chrome with remote debugging, navigates to Odoo with `?debug=assets`
+- **Attach JS Debugger** — Attaches VS Code to Chrome, auto-generates `pathMapping` for all addons
 
----
+### Breakpoints
 
-## Configuration
-
-Open Settings (`Ctrl+,`) and search **Odoo Debugger**, or click `$(settings-gear)` in the panel title bar.
-
-### Core
-
-| Setting | Default | Description |
-|---|---|---|
-| `odooDebugger.database` | `` | PostgreSQL database name. Auto-read from conf file if set |
-| `odooDebugger.communityPath` | `${workspaceFolder}/community` | Path to Odoo community source |
-| `odooDebugger.addonsPaths` | `[]` | Custom addons directories |
-| `odooDebugger.configFile` | `` | Odoo conf file path. If found, passed as `-c` to odoo-bin and DB details read from it |
-| `odooDebugger.port` | `8069` | Odoo HTTP port |
-| `odooDebugger.odooBinPath` | `` | Explicit path to `odoo-bin`. Auto-detected if empty. If multiple found, prompts to select |
-
-### Database Connection
-
-All optional. If a conf file is set, DB details are auto-read from it. Explicit settings override.
-
-| Setting | Default | Description |
-|---|---|---|
-| `odooDebugger.dbHost` | `` | PostgreSQL host (empty = local socket) |
-| `odooDebugger.dbPort` | `` | PostgreSQL port (empty = 5432) |
-| `odooDebugger.dbUser` | `` | PostgreSQL user (empty = OS user) |
-| `odooDebugger.dbPassword` | `` | PostgreSQL password (empty = trust auth) |
-
-### Advanced
-
-| Setting | Default | Description |
-|---|---|---|
-| `odooDebugger.venvPath` | `` | Override Python interpreter path. Auto-detected from VS Code's selected interpreter if empty |
-| `odooDebugger.githubPath` | `${workspaceFolder}/github` | Parent directory for addons auto-discovery |
-| `odooDebugger.limitTimeReal` | `10000` | Request time limit in seconds |
-| `odooDebugger.maxCronThreads` | `0` | Max cron threads (0 = disable cron during development) |
-| `odooDebugger.upgradeScript` | `` | Custom upgrade/restart script. If set, used instead of running odoo-bin directly |
-| `odooDebugger.modelExplorer.sources` | `[]` | Addons dirs to scan in Model Explorer. Empty = uses addonsPaths + community |
-| `odooDebugger.chromePath` | `` | Chrome binary path for JS debugging. Auto-detected if empty |
-| `odooDebugger.chromeDebugPort` | `9222` | Chrome remote debugging port |
+Tree view with all breakpoints — enable/disable/remove, Enable All / Disable All / Clear All.
 
 ---
 
 ## Keyboard Shortcuts
 
-| Shortcut | Action | Context |
+| Shortcut | Action | When |
 |---|---|---|
-| `Ctrl+Shift+R` | Run Odoo | Global |
-| `Ctrl+Shift+D` | Debug Odoo | Not in editor |
-| `Ctrl+Shift+S` | Stop Odoo | Global |
-| `Ctrl+Shift+U` | Update Module | Global |
-| `Ctrl+Shift+I` | Install Module | Not in editor |
-| `Ctrl+Shift+G` | Update Changed Modules | Editor not focused |
-| `Ctrl+Shift+B` | Open Odoo in Browser | Not in editor |
-| `Ctrl+Shift+O` | Open Odoo Shell | Not in editor |
-| `Ctrl+Shift+Q` | Run SQL | Global |
+| `Ctrl+Shift+R` | Run Odoo | Always |
+| `Ctrl+Shift+D` | Debug Odoo | When editor not focused |
+| `Ctrl+Shift+S` | Stop Odoo | Always |
+| `Ctrl+Shift+U` | Update Module | Always |
+| `Ctrl+Shift+I` | Install Module | When editor not focused |
+| `Ctrl+Shift+G` | Update Changed Modules | When editor not focused |
+| `Ctrl+Shift+B` | Open Odoo in Browser | When editor not focused |
+| `Ctrl+Shift+O` | Open Odoo Shell | When editor not focused |
+| `Ctrl+Shift+Q` | Run SQL | Always |
 | `Ctrl+Shift+M` | Go to Model (word/selection) | Editor text focus |
 | `Ctrl+Shift+X` | Go to XML ID (word/selection) | Editor text focus |
-| `Ctrl+Shift+T` | Toggle Py ↔ XML | `.py` or `.xml` file |
+| `Ctrl+Shift+T` | Toggle Py ↔ XML | `.py` or `.xml` file focused |
 | `Ctrl+Shift+.` | Go to Function Definition | Editor text focus |
+| `Ctrl+Alt+N` | Quick Find | Always |
+| `Ctrl+Alt+E` | Focus Odoo Debugger Panel | Always |
+
+---
+
+## Settings Reference
+
+| Setting | Default | Description |
+|---|---|---|
+| `odooDebugger.configFile` | `.odoorc` | Odoo conf file. DB details, addons_path, port auto-read from it |
+| `odooDebugger.database` | `` | DB name override (auto-read from conf file if set) |
+| `odooDebugger.addonsPaths` | `[]` | Addons directories. Auto-discovered from conf file if empty |
+| `odooDebugger.odooBinPath` | `` | Path to `odoo-bin`. Auto-detected in workspace if empty |
+| `odooDebugger.venvPath` | `` | Python interpreter override. Auto-detected from VS Code if empty |
+| `odooDebugger.port` | `8069` | Odoo HTTP port |
+| `odooDebugger.extraArgs` | `[]` | Extra odoo-bin args e.g. `["--dev=all"]` |
+| `odooDebugger.debugOptions` | `{justMyCode:false, subProcess:false}` | debugpy launch options |
+| `odooDebugger.dbHost` | `` | PostgreSQL host |
+| `odooDebugger.dbPort` | `` | PostgreSQL port |
+| `odooDebugger.dbUser` | `` | PostgreSQL user |
+| `odooDebugger.dbPassword` | `` | PostgreSQL password |
+| `odooDebugger.logPanel.enabled` | `true` | Enable Odoo Logs panel. False = no `--logfile`, zero overhead |
+| `odooDebugger.logPanel.logFile` | `/tmp/odoo-vscode.log` | Log file path. Truncated on every server start |
+| `odooDebugger.modelExplorer.sources` | `[]` | Addons dirs to scan. Empty = uses addonsPaths |
+| `odooDebugger.modelExplorer.groupByModule` | `true` | Group by module or flat |
+| `odooDebugger.modelExplorer.sortOrder` | `alpha` | `alpha` or `recent` |
+| `odooDebugger.upgradeScript` | `` | Custom upgrade script. Used instead of odoo-bin if set |
+| `odooDebugger.chromePath` | `` | Chrome binary. Auto-detected if empty |
+| `odooDebugger.chromeDebugPort` | `9222` | Chrome remote debugging port |
 
 ---
 
 ## Requirements
 
 - VS Code `1.85.0` or later
-- **ms-python.debugpy** extension (auto-installed as dependency)
-- Python with Odoo dependencies installed (select interpreter via VS Code's Python extension)
-- PostgreSQL with `psql` available on PATH
-- Odoo source with `odoo-bin` (auto-detected in workspace, prompts if multiple found)
-
----
-
-## Quickstart
-
-1. Open your Odoo workspace folder in VS Code
-2. Select your Python interpreter (`Ctrl+Shift+P` → "Python: Select Interpreter")
-3. If you have an `.odoorc` or conf file → set `odooDebugger.configFile` to its path. DB name, host, port, user, password are all read automatically
-4. If no conf file → set `odooDebugger.database` to your DB name (or use the `$(database)` icon in the panel title bar)
-5. Press `Ctrl+Shift+R` to run
+- `ms-python.debugpy` extension (auto-installed)
+- Python with Odoo dependencies installed
+- PostgreSQL with `psql` on PATH (for SQL Tools and DB management)
+- Odoo source with `odoo-bin` (auto-detected in workspace)
 
 ---
 

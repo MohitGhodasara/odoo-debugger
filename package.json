@@ -2,7 +2,7 @@
   "name": "odoo-debugger",
   "displayName": "Odoo Debugger",
   "description": "All-in-one Odoo development toolkit \u2014 run, debug, update modules, navigate code, filter logs, manage breakpoints, and more. Built for Odoo developers who want to stay in VS Code.",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "publisher": "MohitGhodasara",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -36,7 +36,10 @@
     "Other"
   ],
   "activationEvents": [
-    "workspaceContains:**/odoo-bin"
+    "workspaceContains:**/odoo-bin",
+    "workspaceContains:**/.odoorc",
+    "workspaceContains:**/odoo.conf",
+    "onStartupFinished"
   ],
   "main": "./src/extension.js",
   "contributes": {
@@ -61,57 +64,23 @@
           "default": [],
           "description": "Custom addons directory paths. Use 'Odoo: Manage Addons Paths' to configure."
         },
-        "odooDebugger.communityPath": {
-          "type": "string",
-          "default": "${workspaceFolder}/community",
-          "description": "Path to Odoo community source directory"
-        },
-        "odooDebugger.githubPath": {
-          "type": "string",
-          "default": "${workspaceFolder}/github",
-          "description": "Path to custom addons parent directory (used for auto-discovery)"
-        },
         "odooDebugger.configFile": {
           "type": "string",
           "default": ".odoorc",
-          "description": "Odoo config file path (relative to workspace or absolute)"
+          "description": "Odoo configuration file path (.odoorc, odoo.conf, or any Odoo conf file). Relative to workspace or absolute. DB details auto-read from it."
         },
         "odooDebugger.port": {
           "type": "number",
           "default": 8069,
           "description": "Odoo HTTP port"
         },
-        "odooDebugger.limitTimeReal": {
-          "type": "number",
-          "default": 10000,
-          "description": "Request time limit in seconds"
-        },
-        "odooDebugger.excludedAddonsDirs": {
-          "type": "array",
-          "default": [
-            "releases",
-            "confs",
-            "scripts",
-            "depricated-addons",
-            "utility",
-            "admin-addons",
-            "openupgrade_scripts",
-            "docsource",
-            "setup",
-            "openupgrade_framework"
-          ],
-          "description": "Directory names to exclude from addons path auto-discovery"
-        },
+
         "odooDebugger.upgradeScript": {
           "type": "string",
           "default": "",
           "description": "Path to custom upgrade/restart script. If empty, runs odoo-bin directly."
         },
-        "odooDebugger.maxCronThreads": {
-          "type": "number",
-          "default": 0,
-          "description": "Max cron threads (0 to disable cron during development)"
-        },
+
         "odooDebugger.chromePath": {
           "type": "string",
           "default": "",
@@ -128,7 +97,21 @@
             "type": "string"
           },
           "default": [],
-          "description": "Addons directories to scan in Model Explorer. Empty = use addonsPaths. Use 'Configure Sources' to set."
+          "description": "Addons directories to scan in Model Explorer. Empty = use addonsPaths."
+        },
+        "odooDebugger.modelExplorer.groupByModule": {
+          "type": "boolean",
+          "default": true,
+          "description": "Group inherited model sources by module. False = flat, all fields merged."
+        },
+        "odooDebugger.modelExplorer.sortOrder": {
+          "type": "string",
+          "enum": [
+            "alpha",
+            "recent"
+          ],
+          "default": "alpha",
+          "description": "Model Explorer sort order: alphabetical or recently modified."
         },
         "odooDebugger.odooBinPath": {
           "type": "string",
@@ -154,6 +137,33 @@
           "type": "string",
           "default": "",
           "description": "PostgreSQL password. Empty = trust auth. Auto-read from conf file if set."
+        },
+        "odooDebugger.extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional arguments passed to odoo-bin. Example: [\"--dev=all\", \"--limit-time-real=10000\", \"--max-cron-threads=0\", \"--workers=0\"]"
+        },
+        "odooDebugger.debugOptions": {
+          "type": "object",
+          "default": {
+            "justMyCode": false,
+            "subProcess": false
+          },
+          "description": "debugpy launch options. justMyCode: false = debug into library code. subProcess: false = do not attach to Odoo worker processes (faster). Add any valid debugpy launch config key here.",
+          "additionalProperties": true
+        },
+        "odooDebugger.logPanel.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Odoo Log Panel. When enabled, --logfile is injected and logs appear in the Log Panel tab. Disable for zero overhead."
+        },
+        "odooDebugger.logPanel.logFile": {
+          "type": "string",
+          "default": "/tmp/odoo-vscode.log",
+          "description": "Log file path used by the Odoo Log Panel. Truncated on every server start."
         }
       }
     },
@@ -179,29 +189,10 @@
         "category": "Odoo"
       },
       {
-        "command": "odooDebugger.logFilterAll",
-        "title": "Log Filter: All",
-        "category": "Odoo"
-      },
-      {
-        "command": "odooDebugger.logFilterError",
-        "title": "Log Filter: Errors",
-        "category": "Odoo"
-      },
-      {
-        "command": "odooDebugger.logFilterWarning",
-        "title": "Log Filter: Warnings+",
-        "category": "Odoo"
-      },
-      {
-        "command": "odooDebugger.logFilterInfo",
-        "title": "Log Filter: Info+",
-        "category": "Odoo"
-      },
-      {
-        "command": "odooDebugger.logFilterDebug",
-        "title": "Log Filter: Debug+",
-        "category": "Odoo"
+        "command": "odooDebugger.openLogPanel",
+        "title": "Open Log Panel",
+        "category": "Odoo",
+        "icon": "$(output)"
       },
       {
         "command": "odooDebugger.launchChromeDebug",
@@ -349,12 +340,14 @@
       {
         "command": "odooDebugger.modelExplorer.gotoXmlView",
         "title": "Go to XML View",
-        "category": "Odoo"
+        "category": "Odoo",
+        "icon": "$(file-code)"
       },
       {
         "command": "odooDebugger.modelExplorer.openInBrowser",
         "title": "Open in Odoo Browser",
-        "category": "Odoo"
+        "category": "Odoo",
+        "icon": "$(globe)"
       },
       {
         "command": "odooDebugger.modelExplorer.search",
@@ -439,6 +432,18 @@
         "icon": "$(search)"
       },
       {
+        "command": "odooDebugger.modelExplorer.copyModelName",
+        "title": "Copy Model Name",
+        "category": "Odoo",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "odooDebugger.openConfFile",
+        "title": "Open Odoo Config File",
+        "category": "Odoo",
+        "icon": "$(settings-gear)"
+      },
+      {
         "command": "odooDebugger.modelExplorer.browseRecords",
         "title": "Browse Records",
         "category": "Odoo",
@@ -506,6 +511,29 @@
         "title": "Filter by Model Type",
         "category": "Odoo",
         "icon": "$(filter)"
+      },
+      {
+        "command": "odooDebugger.modelExplorer.sortModels",
+        "title": "Sort Models",
+        "category": "Odoo",
+        "icon": "$(sort-precedence)"
+      },
+      {
+        "command": "odooDebugger.modelExplorer.toggleGroupByModule",
+        "title": "Toggle Group by Module",
+        "category": "Odoo",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "odooDebugger.quickFind",
+        "title": "Quick Find (Model/Field/Function)",
+        "category": "Odoo",
+        "icon": "$(search)"
+      },
+      {
+        "command": "odooDebugger.focusPanel",
+        "title": "Focus Odoo Debugger Panel",
+        "category": "Odoo"
       }
     ],
     "viewsContainers": {
@@ -513,6 +541,13 @@
         {
           "id": "odoo-dev",
           "title": "Odoo Debugger",
+          "icon": "resources/odoo-icon.svg"
+        }
+      ],
+      "panel": [
+        {
+          "id": "odoo-logs",
+          "title": "Odoo Logs",
           "icon": "resources/odoo-icon.svg"
         }
       ]
@@ -542,6 +577,13 @@
           "id": "odooDebugger.dropzone",
           "name": "Panel",
           "when": "false"
+        }
+      ],
+      "odoo-logs": [
+        {
+          "type": "webview",
+          "id": "odooDebugger.logPanel",
+          "name": "Odoo Logs"
         }
       ]
     },
@@ -595,14 +637,9 @@
           "group": "navigation@3"
         },
         {
-          "command": "odooDebugger.selectCommunityPath",
+          "command": "odooDebugger.openConfFile",
           "when": "view == odooDebugger.sidebar",
           "group": "navigation@4"
-        },
-        {
-          "command": "odooDebugger.openSettings",
-          "when": "view == odooDebugger.sidebar",
-          "group": "navigation@5"
         },
         {
           "command": "odooDebugger.modelExplorer.filterType",
@@ -610,9 +647,19 @@
           "group": "navigation@1"
         },
         {
-          "command": "odooDebugger.modelExplorer.search",
+          "command": "odooDebugger.modelExplorer.sortModels",
           "when": "view == odooDebugger.modelExplorer",
           "group": "navigation@2"
+        },
+        {
+          "command": "odooDebugger.modelExplorer.toggleGroupByModule",
+          "when": "view == odooDebugger.modelExplorer",
+          "group": "navigation@3"
+        },
+        {
+          "command": "odooDebugger.modelExplorer.search",
+          "when": "view == odooDebugger.modelExplorer",
+          "group": "navigation@4"
         },
         {
           "command": "odooDebugger.modelExplorer.clearFilter",
@@ -671,6 +718,16 @@
         }
       ],
       "view/item/context": [
+        {
+          "command": "odooDebugger.modelExplorer.copyModelName",
+          "when": "viewItem == odooModel",
+          "group": "odoo@0"
+        },
+        {
+          "command": "odooDebugger.modelExplorer.copyModelName",
+          "when": "viewItem == odooModel",
+          "group": "inline@0"
+        },
         {
           "command": "odooDebugger.modelExplorer.gotoXmlView",
           "when": "viewItem == odooModel",
@@ -828,6 +885,21 @@
         "command": "odooDebugger.gotoFunctionDef",
         "key": "ctrl+shift+.",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "odooDebugger.quickFind",
+        "key": "ctrl+alt+n",
+        "when": "workspaceFolderCount > 0"
+      },
+      {
+        "command": "odooDebugger.focusPanel",
+        "key": "ctrl+alt+e",
+        "when": "workspaceFolderCount > 0"
+      },
+      {
+        "command": "odooDebugger.modelExplorer.clearFilter",
+        "key": "escape",
+        "when": "view == odooDebugger.modelExplorer && odooDebuggerModelFilterActive"
       }
     ]
   },

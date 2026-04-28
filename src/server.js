@@ -19,31 +19,19 @@ async function _ensureStopped(waitForPort = true) {
     const terminal = utils.getServerTerminal();
     if (terminal) terminal.dispose();
     utils.setServerState('stopped', null);
-    if (!waitForPort) {
-        await new Promise(r => setTimeout(r, 1000));
-        return true;
-    }
-    // Wait for port to free up (only for run/debug, not update/install)
-    const net = require('net');
-    for (let i = 0; i < 10; i++) {
-        await new Promise(r => setTimeout(r, 400));
-        const free = await new Promise(resolve => {
-            const s = net.createConnection({ port: utils.getPort() });
-            s.on('connect', () => { s.destroy(); resolve(false); });
-            s.on('error', () => resolve(true));
-            s.setTimeout(300, () => { s.destroy(); resolve(true); });
-        });
-        if (free) return true;
-    }
+    // Fixed delay — enough for OS to release the port after stopDebugging()
+    await new Promise(r => setTimeout(r, waitForPort ? 500 : 300));
     return true;
 }
 
 async function runOdoo() {
     await _ensureStopped();
+    utils.setServerState('starting', null);
     const odooBin = await utils.resolveOdooBin();
-    if (!odooBin) return;
+    if (!odooBin) { utils.setServerState('stopped', null); return; }
     const args = utils.buildOdooArgs();
     const pythonPath = utils.getPythonPath();
+    const debugOptions = utils.getConfig('debugOptions') || {};
     const config = {
         name: 'Run Odoo',
         type: 'debugpy',
@@ -52,23 +40,27 @@ async function runOdoo() {
         python: pythonPath,
         pythonPath: pythonPath,
         args,
-        django: true,
-        jinja: true,
         console: 'integratedTerminal',
-        env: { VIRTUAL_ENV: utils.getVenvDir() || '' },
+        justMyCode: false,
+        subProcess: false,
+        ...debugOptions,
     };
     const started = await vscode.debug.startDebugging(undefined, config, { noDebug: true, suppressDebugToolbar: true, suppressDebugStatusbar: true, suppressDebugView: true });
     if (started) {
         utils.setServerState('running', null);
+    } else {
+        utils.setServerState('stopped', null);
     }
 }
 
 async function debugOdoo() {
     await _ensureStopped();
+    utils.setServerState('starting', null);
     const odooBin = await utils.resolveOdooBin();
-    if (!odooBin) return;
+    if (!odooBin) { utils.setServerState('stopped', null); return; }
     const args = utils.buildOdooArgs();
     const pythonPath = utils.getPythonPath();
+    const debugOptions = utils.getConfig('debugOptions') || {};
     const config = {
         name: 'Debug Odoo',
         type: 'debugpy',
@@ -77,14 +69,16 @@ async function debugOdoo() {
         python: pythonPath,
         pythonPath: pythonPath,
         args,
-        django: true,
-        jinja: true,
         console: 'integratedTerminal',
-        env: { VIRTUAL_ENV: utils.getVenvDir() || '' },
+        justMyCode: false,
+        subProcess: false,
+        ...debugOptions,
     };
-    const started = await vscode.debug.startDebugging(undefined, config);
+    const started = await vscode.debug.startDebugging(undefined, config, { suppressDebugToolbar: false, suppressDebugStatusbar: true, suppressDebugView: true });
     if (started) {
         utils.setServerState('debugging', vscode.debug.activeDebugSession);
+    } else {
+        utils.setServerState('stopped', null);
     }
 }
 
@@ -154,6 +148,7 @@ async function uninstallModule() {
     const odooBin = await utils.resolveOdooBin();
     if (!odooBin) return;
     const pythonPath = utils.getPythonPath();
+    const args = utils.buildOdooArgs(['shell', '--no-http']);
     await vscode.debug.startDebugging(undefined, {
         name: 'Odoo Uninstall',
         type: 'debugpy',
@@ -161,10 +156,8 @@ async function uninstallModule() {
         program: odooBin,
         python: pythonPath,
         pythonPath: pythonPath,
-        args: ['shell', `--database=${utils.getDatabase()}`, `--db-filter=${utils.getDatabase()}`,
-               `--addons-path=${utils.getFullAddonsPath()}`, '--no-http'],
+        args,
         console: 'integratedTerminal',
-        env: { VIRTUAL_ENV: utils.getVenvDir() || '' },
     }, { noDebug: true, suppressDebugToolbar: true, suppressDebugStatusbar: true, suppressDebugView: true });
     vscode.window.showInformationMessage(`Shell opened. Run: self.env['ir.module.module'].search([('name','=','${mod}')]).button_immediate_uninstall()`);
 }
@@ -189,9 +182,7 @@ async function _buildModule(action, modules) {
         python: pythonPath,
         pythonPath: pythonPath,
         args,
-        django: true,
         console: 'integratedTerminal',
-        env: { VIRTUAL_ENV: utils.getVenvDir() || '' },
     }, { noDebug: true, suppressDebugToolbar: true, suppressDebugStatusbar: true, suppressDebugView: true });
 }
 
@@ -201,6 +192,7 @@ async function openShell() {
     const odooBin = await utils.resolveOdooBin();
     if (!odooBin) return;
     const pythonPath = utils.getPythonPath();
+    const args = utils.buildOdooArgs(['shell', '--no-http']);
     await vscode.debug.startDebugging(undefined, {
         name: 'Odoo Shell',
         type: 'debugpy',
@@ -208,10 +200,8 @@ async function openShell() {
         program: odooBin,
         python: pythonPath,
         pythonPath: pythonPath,
-        args: ['shell', `--database=${utils.getDatabase()}`, `--db-filter=${utils.getDatabase()}`,
-               `--addons-path=${utils.getFullAddonsPath()}`, '--no-http'],
+        args,
         console: 'integratedTerminal',
-        env: { VIRTUAL_ENV: utils.getVenvDir() || '' },
     }, { noDebug: true, suppressDebugToolbar: true, suppressDebugStatusbar: true, suppressDebugView: true });
 }
 
@@ -246,9 +236,7 @@ async function attachJsDebugger() {
     const odooPort = utils.getPort();
 
     // Build pathMapping from all custom addons paths
-    const pathMapping = {
-        '/': path.join(utils.getCommunityPath(), 'addons') + '/',
-    };
+    const pathMapping = {};
     const customPaths = utils.getCustomAddonsPaths();
     for (const addonsDir of customPaths) {
         if (!fs.existsSync(addonsDir)) continue;
@@ -304,13 +292,14 @@ async function manageAddonsPaths() {
     });
     if (!picks) return;
 
-    // Handle browse option
+    // Handle browse option — selected folder IS the addons dir, use as-is
     let selected = picks.filter(p => !p._browse).map(p => p.description);
     if (picks.some(p => p._browse)) {
         const uris = await vscode.window.showOpenDialog({
-            title: 'Select Addons Directory',
+            title: 'Select Addons Directory (the folder containing module folders)',
             canSelectFiles: false, canSelectFolders: true, canSelectMany: true,
         });
+        // Add each selected folder directly — no subdirectory scanning
         if (uris) selected.push(...uris.map(u => u.fsPath));
     }
 
@@ -343,7 +332,7 @@ async function scaffoldModule() {
 
     const moduleName = await vscode.window.showInputBox({
         title: 'Module Name',
-        placeHolder: 'e.g. ion_feature_request',
+        placeHolder: 'e.g. my_custom_module',
         prompt: 'Technical name (snake_case)',
         validateInput: v => /^[a-z][a-z0-9_]*$/.test(v) ? null : 'Must be lowercase snake_case'
     });

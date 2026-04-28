@@ -1,134 +1,107 @@
+const fs = require('fs');
+const path = require('path');
 const vscode = require('vscode');
 const utils = require('./utils');
 
-let _outputChannel = null;
-let _terminalCaptureListener = null;
-let _liveListener = null;
-let _currentFilter = 'ALL';
-let _capturedLines = [];
-const MAX_CAPTURED = 5000;
+// ── State ──────────────────────────────────────────────────────────
+let _panel = null;
+let _vscode = null;
+let _watcher = null;
+let _filePos = 0;
+let _debounceTimer = null;
+let _firstLines = true; // focus panel on first log output
 
 const LEVEL_PRIORITY = { CRITICAL: 0, ERROR: 1, WARNING: 2, INFO: 3, DEBUG: 4 };
 
-function stripAnsi(str) {
-    return str.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
+// ── Public API ─────────────────────────────────────────────────────
+
+function isEnabled() {
+    return utils.getConfig('logPanel.enabled') !== false;
 }
 
-function getOutputChannel() {
-    if (!_outputChannel) {
-        _outputChannel = vscode.window.createOutputChannel('Odoo Logs', 'log');
-    }
-    return _outputChannel;
+function getLogFile() {
+    return utils.getConfig('logPanel.logFile') || '/tmp/odoo-vscode.log';
 }
 
-function _matchesFilter(line) {
-    if (_currentFilter === 'ALL') return true;
-    const match = line.match(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d+ \d+ (\w+)/);
-    if (!match) return true;
-    const level = match[1].toUpperCase();
-    const filterPriority = LEVEL_PRIORITY[_currentFilter] ?? 3;
-    const linePriority = LEVEL_PRIORITY[level] ?? 3;
-    return linePriority <= filterPriority;
+function setPanel(provider, vsCodeRef) {
+    _panel = provider;
+    _vscode = vsCodeRef;
 }
 
-function _processTerminalData(data) {
-    const raw = stripAnsi(data);
-    const lines = raw.split(/\r?\n/);
-    for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        _capturedLines.push(trimmed);
-        if (_capturedLines.length > MAX_CAPTURED) {
-            _capturedLines.shift();
-        }
-    }
+/** Called before server starts — truncate log file */
+function onServerStart() {
+    if (!isEnabled()) return;
+    const logFile = getLogFile();
+    try { fs.writeFileSync(logFile, '', { flag: 'w' }); } catch (_) {}
+    _filePos = 0;
+    _firstLines = true;
+    _panel?.clear();
+    _startWatcher(logFile);
 }
 
-/** Start background capture of Odoo terminal output */
-function startTerminalCapture() {
-    stopTerminalCapture();
-    _terminalCaptureListener = vscode.window.onDidWriteTerminalData(e => {
-        const serverTerminal = utils.getServerTerminal();
-        if (!serverTerminal || e.terminal !== serverTerminal) return;
-        _processTerminalData(e.data);
-    });
-}
-
-function stopTerminalCapture() {
-    if (_terminalCaptureListener) {
-        _terminalCaptureListener.dispose();
-        _terminalCaptureListener = null;
-    }
-}
-
-/** Start live filtered log view in Output Channel */
-function startTailing() {
-    stopLive();
-    const channel = getOutputChannel();
-    channel.clear();
-    channel.appendLine(`── Odoo Logs (filter: ${_currentFilter}) ──`);
-    channel.appendLine('');
-
-    // Show existing captured lines filtered
-    for (const line of _capturedLines) {
-        if (_matchesFilter(line)) {
-            channel.appendLine(line);
-        }
-    }
-
-    // Live forward new lines
-    const serverTerminal = utils.getServerTerminal();
-    if (serverTerminal && utils.getServerState() !== 'stopped') {
-        _liveListener = vscode.window.onDidWriteTerminalData(e => {
-            if (e.terminal !== serverTerminal) return;
-            const raw = stripAnsi(e.data);
-            const lines = raw.split(/\r?\n/);
-            for (const line of lines) {
-                const trimmed = line.trim();
-                if (trimmed && _matchesFilter(trimmed)) {
-                    channel.appendLine(trimmed);
-                }
-            }
-        });
-    } else if (_capturedLines.length === 0) {
-        channel.appendLine('No logs captured. Start the Odoo server to see logs.');
-    }
-
-    channel.show(true);
-}
-
-function stopLive() {
-    if (_liveListener) {
-        _liveListener.dispose();
-        _liveListener = null;
-    }
-}
-
-function setFilter(level) {
-    _currentFilter = level;
-}
-
-function getCurrentFilter() {
-    return _currentFilter;
-}
-
-function clearCaptured() {
-    _capturedLines = [];
+/** Called when server stops */
+function onServerStop() {
+    _stopWatcher();
 }
 
 function dispose() {
-    stopLive();
-    stopTerminalCapture();
-    _capturedLines = [];
-    if (_outputChannel) {
-        _outputChannel.dispose();
-        _outputChannel = null;
-    }
+    _stopWatcher();
+    _panel = null;
 }
 
-module.exports = {
-    startTailing, stopLive, setFilter,
-    getCurrentFilter, getOutputChannel,
-    startTerminalCapture, stopTerminalCapture, clearCaptured,
-    dispose,
-};
+// ── File watcher ───────────────────────────────────────────────────
+
+function _startWatcher(logFile) {
+    _stopWatcher();
+    // Wait for file to exist (Odoo may not write immediately)
+    const tryWatch = (attempts) => {
+        if (!fs.existsSync(logFile)) {
+            if (attempts > 20) return; // give up after 10s
+            setTimeout(() => tryWatch(attempts + 1), 500);
+            return;
+        }
+        try {
+            _watcher = fs.watch(logFile, { persistent: false }, () => {
+                if (_debounceTimer) return;
+                _debounceTimer = setTimeout(_readNewBytes, 100);
+            });
+            _watcher.on('error', () => _stopWatcher());
+        } catch (_) {}
+    };
+    tryWatch(0);
+}
+
+function _stopWatcher() {
+    if (_debounceTimer) { clearTimeout(_debounceTimer); _debounceTimer = null; }
+    if (_watcher) { try { _watcher.close(); } catch (_) {} _watcher = null; }
+    _pendingLines = [];
+}
+
+function _readNewBytes() {
+    _debounceTimer = null;
+    const logFile = getLogFile();
+    try {
+        const stat = fs.statSync(logFile);
+        if (stat.size <= _filePos) return;
+        const fd = fs.openSync(logFile, 'r');
+        const len = stat.size - _filePos;
+        const buf = Buffer.alloc(len);
+        const bytesRead = fs.readSync(fd, buf, 0, len, _filePos);
+        fs.closeSync(fd);
+        _filePos += bytesRead;
+        const text = buf.slice(0, bytesRead).toString('utf8');
+        const lines = text.split(/\r?\n/).filter(l => l.trim());
+        if (lines.length) {
+            _panel?.appendLines(lines);
+            // Focus log panel on first output — event-driven, no delay needed
+            if (_firstLines && _vscode) {
+                _firstLines = false;
+                _vscode.commands.executeCommand('odooDebugger.logPanel.focus');
+            }
+        }
+    } catch (_) {}
+}
+
+// ── Exports ────────────────────────────────────────────────────────
+
+module.exports = { isEnabled, getLogFile, setPanel, onServerStart, onServerStop, dispose };

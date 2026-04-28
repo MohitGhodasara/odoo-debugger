@@ -252,19 +252,24 @@ document.getElementById('search').addEventListener('keydown', e => { if (e.key =
 
 function browseModel(modelName) {
     const table = modelName.replace(/\./g, '_');
-    // Get columns first to build a smart query
-    let sql;
     try {
+        // Check table exists first
+        const exists = runQuery(`SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='${table}')`);
+        if (exists.rows[0]?.[0] !== 't' && exists.rows[0]?.[0] !== true && exists.rows[0]?.[0] !== 'true') {
+            const vscode = require('vscode');
+            vscode.window.showWarningMessage(`Table "${table}" not found in database. This model may be abstract or use a custom table name (_table attribute).`);
+            return;
+        }
         const cols = runQuery(`SELECT column_name FROM information_schema.columns WHERE table_name='${table}' ORDER BY ordinal_position LIMIT 20`);
         const colNames = cols.rows.map(r => r[0]);
-        // Pick useful columns: id, name/display_name, state, active, create_date — skip binary/text blobs
         const skip = ['arch', 'arch_base', 'arch_db', 'arch_fs', 'arch_prev', 'website_description', 'description_html'];
         const selected = colNames.filter(c => !skip.includes(c)).slice(0, 12);
-        sql = `SELECT ${selected.join(', ')} FROM ${table} LIMIT 100`;
-    } catch (_) {
-        sql = `SELECT * FROM ${table} LIMIT 100`;
+        const sql = `SELECT ${selected.join(', ')} FROM ${table} LIMIT 100`;
+        openDataBrowser(`Records: ${modelName}`, sql, { modelName });
+    } catch (e) {
+        const vscode = require('vscode');
+        vscode.window.showErrorMessage(`Cannot browse ${modelName}: ${e.message}`);
     }
-    openDataBrowser(`Records: ${modelName}`, sql, { modelName });
 }
 
 function browseField(modelName, fieldName, fieldType) {
