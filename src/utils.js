@@ -498,8 +498,8 @@ function buildOdooArgs(extra = []) {
 
     const extraArgs = getConfig('extraArgs') || [];
     args.push(...extraArgs);
-    // Inject --logfile if log panel is enabled (only for main server, not build/shell)
-    if (extra.length === 0 || (!extra.includes('--stop-after-init') && !extra.includes('shell'))) {
+    // Inject --logfile if log panel is enabled for run/debug/build flows.
+    if (!extra.includes('shell')) {
         if (getConfig('logPanel.enabled') !== false) {
             const logFile = getConfig('logPanel.logFile') || '/tmp/odoo-vscode.log';
             args.push(`--logfile=${logFile}`);

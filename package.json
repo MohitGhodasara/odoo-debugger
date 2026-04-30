@@ -1,8 +1,8 @@
 {
   "name": "odoo-debugger",
   "displayName": "Odoo Debugger",
-  "description": "All-in-one Odoo development toolkit \u2014 run, debug, update modules, navigate code, filter logs, manage breakpoints, and more. Built for Odoo developers who want to stay in VS Code.",
-  "version": "1.3.0",
+  "description": "All-in-one Odoo development toolkit — run, debug, update modules, navigate code, filter logs, manage breakpoints, and more. Built for Odoo developers who want to stay in VS Code.",
+  "version": "1.4.0",
   "publisher": "MohitGhodasara",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -74,13 +74,11 @@
           "default": 8069,
           "description": "Odoo HTTP port"
         },
-
         "odooDebugger.upgradeScript": {
           "type": "string",
           "default": "",
           "description": "Path to custom upgrade/restart script. If empty, runs odoo-bin directly."
         },
-
         "odooDebugger.chromePath": {
           "type": "string",
           "default": "",
@@ -112,6 +110,22 @@
           ],
           "default": "alpha",
           "description": "Model Explorer sort order: alphabetical or recently modified."
+        },
+        "odooDebugger.modelExplorer.typeFilter": {
+          "type": "string",
+          "enum": [
+            "all",
+            "model",
+            "transient",
+            "abstract"
+          ],
+          "default": "model",
+          "description": "Default model type filter on startup. 'model' = only models.Model (fastest). 'all' = show everything."
+        },
+        "odooDebugger.modelExplorer.showViews": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a Views folder under each model in Model Explorer. Disable for zero XML scanning overhead."
         },
         "odooDebugger.odooBinPath": {
           "type": "string",
@@ -242,7 +256,7 @@
       },
       {
         "command": "odooDebugger.toggleModelView",
-        "title": "Toggle Model \u2194 View",
+        "title": "Toggle Model ↔ View",
         "category": "Odoo"
       },
       {
@@ -531,6 +545,12 @@
         "icon": "$(search)"
       },
       {
+        "command": "odooDebugger.modelExplorer.moveToPanel",
+        "title": "Move to Panel / Sidebar",
+        "category": "Odoo",
+        "icon": "$(move-to-panel)"
+      },
+      {
         "command": "odooDebugger.focusPanel",
         "title": "Focus Odoo Debugger Panel",
         "category": "Odoo"
@@ -566,6 +586,12 @@
         {
           "id": "odooDebugger.sqlTools",
           "name": "SQL Tools",
+          "collapsed": true
+        },
+        {
+          "type": "webview",
+          "id": "odooDebugger.tools",
+          "name": "Tools",
           "collapsed": true
         },
         {
@@ -645,6 +671,11 @@
           "command": "odooDebugger.modelExplorer.filterType",
           "when": "view == odooDebugger.modelExplorer",
           "group": "navigation@1"
+        },
+        {
+          "command": "odooDebugger.modelExplorer.moveToPanel",
+          "when": "view == odooDebugger.modelExplorer",
+          "group": "navigation@0"
         },
         {
           "command": "odooDebugger.modelExplorer.sortModels",

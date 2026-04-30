@@ -95,9 +95,18 @@ class MethodItem extends vscode.TreeItem {
     }
 }
 
+class FieldsGroupItem extends vscode.TreeItem {
+    constructor(fields) {
+        super(`Fields (${fields.length})`, vscode.TreeItemCollapsibleState.Collapsed);
+        this.fields = fields;
+        this.contextValue = 'odooFieldsGroup';
+        this.iconPath = new vscode.ThemeIcon('symbol-field');
+    }
+}
+
 class MethodsGroupItem extends vscode.TreeItem {
     constructor(methods, filePath) {
-        super(`Methods (${methods.length})`, vscode.TreeItemCollapsibleState.Collapsed);
+        super(`Functions (${methods.length})`, vscode.TreeItemCollapsibleState.Collapsed);
         this.methods = methods;
         this.filePath = filePath;
         this.contextValue = 'odooMethodsGroup';
@@ -105,7 +114,133 @@ class MethodsGroupItem extends vscode.TreeItem {
     }
 }
 
+// ── View items ─────────────────────────────────────────────────────
+
+const _VIEW_ICONS = {
+    form: 'symbol-class', tree: 'list-tree', list: 'list-tree',
+    search: 'search', kanban: 'layout', pivot: 'table',
+    graph: 'pulse', calendar: 'calendar', activity: 'tasklist',
+    qweb: 'code', cohort: 'graph-line', map: 'location',
+};
+
+class ViewsFolderItem extends vscode.TreeItem {
+    constructor(modelName, addonsDirs) {
+        super('Views', vscode.TreeItemCollapsibleState.Collapsed);
+        this.modelName = modelName;
+        this.addonsDirs = addonsDirs;
+        this.contextValue = 'odooViewsFolder';
+        this.iconPath = new vscode.ThemeIcon('file-code');
+    }
+}
+
+class ViewItem extends vscode.TreeItem {
+    constructor(view, children = []) {
+        const label = view.xmlId || view.name || 'unknown';
+        const state = children.length > 0
+            ? vscode.TreeItemCollapsibleState.Collapsed
+            : vscode.TreeItemCollapsibleState.None;
+        super(label, state);
+        this.view = view;
+        this.viewChildren = children;
+        this.description = `[${view.module}]`;
+        this.contextValue = 'odooView';
+        if (view._stub) {
+            this.tooltip = `External view (not in scanned addons)\n${view.fullXmlId}`;
+            this.iconPath = new vscode.ThemeIcon(_VIEW_ICONS[view.viewType] || 'link-external');
+        } else {
+            this.tooltip = `${view.viewType || 'inherit'} view\n${view.filePath}:${view.line}`;
+            this.iconPath = new vscode.ThemeIcon(_VIEW_ICONS[view.viewType] || 'file-code');
+            this.command = { command: 'odooDebugger.modelExplorer.goto', title: 'Go to View', arguments: [view.filePath, view.line] };
+        }
+    }
+}
+
 // ── Parser ─────────────────────────────────────────────────────────
+
+// -- View scanner --
+
+function _scanViewsForModel(modelName, addonsDirs) {
+    const views = [];
+    for (const addonsDir of addonsDirs) {
+        if (!fs.existsSync(addonsDir)) continue;
+        const xmlFiles = _findXmlFiles(addonsDir, true);
+        for (const filePath of xmlFiles) {
+            try {
+                const content = fs.readFileSync(filePath, "utf8");
+                const lines = content.split("\n");
+                let i = 0;
+                while (i < lines.length) {
+                    const line = lines[i];
+                    if (!line.includes("ir.ui.view")) { i++; continue; }
+                    if (!/<record[^>]+model=["\x27]ir\.ui\.view["\x27]/.test(line)) { i++; continue; }
+                    const idM = line.match(/\bid=["\x27]([^"\x27]+)["\x27]/);
+                    const xmlId = idM ? idM[1] : "";
+                    const recLine = i + 1;
+                    let modelVal = "", inheritRef = "", viewType = "", name = "";
+                    let j = i;
+                    while (j < lines.length && j < i + 60) {
+                        const l = lines[j];
+                        const mM = l.match(/<field[^>]+name=["\x27]model["\x27][^>]*>([^<]+)</);
+                        if (mM) modelVal = mM[1].trim();
+                        const nM = l.match(/<field[^>]+name=["\x27]name["\x27][^>]*>([^<]+)</);
+                        if (nM) name = nM[1].trim();
+                        const iM = l.match(/<field[^>]+name=["\x27]inherit_id["\x27][^>]+ref=["\x27]([^"\x27]+)["\x27]/);
+                        if (iM) inheritRef = iM[1];
+                        const aM = l.match(/<(form|tree|list|search|kanban|pivot|graph|calendar|activity|qweb)[\s>]/);
+                        if (aM && !viewType) viewType = aM[1];
+                        const tM = l.match(/<field[^>]+name=["\x27]type["\x27][^>]*>([^<]+)</);
+                        if (tM && !viewType) viewType = tM[1].trim();
+                        if (l.includes("</record>")) break;
+                        j++;
+                    }
+                    i = j + 1;
+                    if (!modelVal || modelVal !== modelName) continue;
+                    const parts = filePath.replace(addonsDir + path.sep, "").split(path.sep);
+                    const module = parts[0] || "";
+                    const displayId = xmlId.includes(".") ? xmlId.split(".").slice(1).join(".") : xmlId;
+                    views.push({ xmlId: displayId, fullXmlId: xmlId, name, modelName, inheritRef, viewType, module, filePath, line: recLine });
+                }
+            } catch (_) {}
+        }
+    }
+    return views;
+}
+
+function _buildViewTree(views) {
+    const byId = new Map();
+    for (const v of views) {
+        byId.set(v.xmlId, v);
+        if (v.fullXmlId) byId.set(v.fullXmlId, v);
+    }
+    const roots = [], childrenMap = new Map();
+    const stubs = new Map();
+    for (const v of views) {
+        if (!v.inheritRef) {
+            roots.push(v);
+        } else {
+            const pk = v.inheritRef.includes(".") ? v.inheritRef.split(".").slice(1).join(".") : v.inheritRef;
+            const parent = byId.get(pk) || byId.get(v.inheritRef);
+            if (parent) {
+                // inherit child's viewType from parent if not detected
+                if (!v.viewType && parent.viewType) v.viewType = parent.viewType;
+                if (!childrenMap.has(parent.xmlId)) childrenMap.set(parent.xmlId, []);
+                childrenMap.get(parent.xmlId).push(v);
+            } else {
+                const stubKey = v.inheritRef;
+                if (!stubs.has(stubKey)) {
+                    const stub = { xmlId: pk, fullXmlId: v.inheritRef, name: v.inheritRef, modelName: v.modelName, inheritRef: '', viewType: v.viewType, module: v.inheritRef.split('.')[0] || '', filePath: null, line: null, _stub: true };
+                    stubs.set(stubKey, stub);
+                    roots.push(stub);
+                }
+                const stub = stubs.get(stubKey);
+                if (!v.viewType && stub.viewType) v.viewType = stub.viewType;
+                if (!childrenMap.has(stub.xmlId)) childrenMap.set(stub.xmlId, []);
+                childrenMap.get(stub.xmlId).push(v);
+            }
+        }
+    }
+    return { roots, childrenMap };
+}
 
 function parseModelsFromFile(filePath) {
     let content;
@@ -250,12 +385,13 @@ async function configureSources() {
 // ── Tree Data Provider ─────────────────────────────────────────────
 
 class ModelExplorerProvider {
-    constructor() {
+    constructor(indexMgr) {
+        this._indexMgr = indexMgr || null;
         this._onDidChangeTreeData = new vscode.EventEmitter();
         this.onDidChangeTreeData = this._onDidChangeTreeData.event;
         this._cache = null;
         this._filter = '';
-        this._typeFilter = 'all'; // 'all' | 'model' | 'transient' | 'abstract'
+        this._typeFilter = utils.getConfig('modelExplorer.typeFilter') || 'model';
         this._sortOrder = utils.getConfig('modelExplorer.sortOrder') || 'alpha';
         this._groupByModule = utils.getConfig('modelExplorer.groupByModule') !== false;
         this._treeView = null;
@@ -283,6 +419,7 @@ class ModelExplorerProvider {
 
     setTypeFilter(type) {
         this._typeFilter = type;
+        vscode.workspace.getConfiguration('odooDebugger').update('modelExplorer.typeFilter', type, 1);
         this._onDidChangeTreeData.fire();
         this._updateViewDescription();
     }
@@ -315,105 +452,169 @@ class ModelExplorerProvider {
 
     getTreeItem(element) { return element; }
 
+    getParent(element) { return element._parent || null; }
+
     getChildren(element) {
         if (element instanceof ModelItem) {
             if (element.sources.length === 1 || !this._groupByModule) {
-                // Flat: merge all fields from all sources
                 if (!this._groupByModule && element.sources.length > 1) {
-                    return this._fieldsForSources(element.sources);
+                    return this._fieldsForSources(element.sources, element.modelName, element);
                 }
-                return this._fieldsForSource(element.sources[0], element.modelName);
+                return this._fieldsForSource(element.sources[0], element.modelName, element);
             }
-            return element.sources.map(s => {
+            const { fieldQ: fq2, methodQ: mq2 } = _parseQuery(this._filter || '');
+            const fieldQ2 = fq2 !== undefined ? fq2 : null;
+            const methodQ2 = mq2 !== undefined ? mq2 : null;
+            return element.sources.filter(s => {
+                if (fieldQ2 !== null && fieldQ2) return s.fields.some(f => f.name.toLowerCase().startsWith(fieldQ2));
+                if (methodQ2 !== null && methodQ2) return (s.methods || []).some(m => m.name.toLowerCase().startsWith(methodQ2));
+                return true;
+            }).map(s => {
                 const item = new SourceItem(s);
+                item._parent = element;
+                item.source._modelName = element.modelName;
                 this._itemCache.set(`source:${s.filePath}`, item);
                 return item;
             });
         }
-        if (element instanceof SourceItem) return this._fieldsForSource(element.source, null);
+        if (element instanceof SourceItem) return this._fieldsForSource(element.source, element.source._modelName || null, element);
+        if (element instanceof FieldsGroupItem) {
+            return element.fields.map(f => {
+                const item = new FieldItem(f);
+                item._parent = element;
+                this._itemCache.set(`field:${f.filePath}:${f.line}`, item);
+                return item;
+            });
+        }
         if (element instanceof MethodsGroupItem) {
             return element.methods.map(m => {
                 const item = new MethodItem(m);
+                item._parent = element;
                 this._itemCache.set(`method:${m.filePath}:${m.line}`, item);
+                return item;
+            });
+        }
+        if (element instanceof ViewsFolderItem) {
+            const views = _scanViewsForModel(element.modelName, element.addonsDirs);
+            element.label = `Views (${views.length})`;
+            if (!views.length) return [];
+            const { roots, childrenMap } = _buildViewTree(views);
+            const makeViewItem = (v, parent) => {
+                const children = childrenMap.get(v.xmlId) || [];
+                const item = new ViewItem(v, children);
+                item._parent = parent;
+                item._childrenMap = childrenMap;
+                this._itemCache.set(`view:${v.fullXmlId || v.xmlId}`, item);
+                return item;
+            };
+            return roots.map(v => makeViewItem(v, element));
+        }
+        if (element instanceof ViewItem) {
+            return (element.viewChildren || []).map(v => {
+                if (!v.viewType && element.view && element.view.viewType) v.viewType = element.view.viewType;
+                const children = (element._childrenMap || new Map()).get(v.xmlId) || [];
+                const item = new ViewItem(v, children);
+                item._parent = element;
+                item._childrenMap = element._childrenMap;
+                this._itemCache.set(`view:${v.fullXmlId || v.xmlId}`, item);
                 return item;
             });
         }
         return this._getRootItems();
     }
 
-    _fieldsForSource(source, modelName) {
+    _fieldsForSource(source, modelName, parentElement) {
         const items = [];
         const activeFilter = this._filter || '';
-        const _pq = _parseQuery(activeFilter);
-        const fieldQ = _pq.fieldQ !== undefined ? _pq.fieldQ : null;
-        const methodQ = _pq.methodQ !== undefined ? _pq.methodQ : null;
+        const { fieldQ: fq, methodQ: mq } = _parseQuery(activeFilter);
+        const fieldQ = fq !== undefined ? fq : null;
+        const methodQ = mq !== undefined ? mq : null;
 
-        // When # filter active — hide fields entirely, show only matching methods
-        // When @ filter active — show only matching fields, hide methods group
-        if (!methodQ) {
-            const fields = fieldQ
-                ? source.fields.filter(f => f.name.toLowerCase().startsWith(fieldQ))
-                : source.fields;
-
-            if (fields.length) {
-                fields.forEach(f => {
-                    const item = new FieldItem(f);
-                    this._itemCache.set(`field:${f.filePath}:${f.line}`, item);
-                    items.push(item);
-                });
-            } else if (!fieldQ) {
-                const empty = new vscode.TreeItem('No fields');
-                empty.iconPath = new vscode.ThemeIcon('dash');
-                items.push(empty);
-            }
+        if (fieldQ !== null) {
+            const fields = fieldQ ? source.fields.filter(f => f.name.toLowerCase().startsWith(fieldQ)) : source.fields;
+            fields.forEach(f => {
+                const item = new FieldItem(f);
+                item._parent = parentElement;
+                this._itemCache.set(`field:${f.filePath}:${f.line}`, item);
+                items.push(item);
+            });
+            return items;
         }
-
-        if (!fieldQ) {
-            const methods = methodQ
-                ? (source.methods || []).filter(m => m.name.toLowerCase().startsWith(methodQ))
-                : (source.methods || []);
-
-            if (methods.length) {
-                const groupItem = new MethodsGroupItem(methods, source.filePath);
-                this._itemCache.set(`methodsGroup:${source.filePath}`, groupItem);
-                items.push(groupItem);
-            }
+        if (methodQ !== null) {
+            const methods = methodQ ? (source.methods || []).filter(m => m.name.toLowerCase().startsWith(methodQ)) : (source.methods || []);
+            methods.forEach(m => {
+                const item = new MethodItem(m);
+                item._parent = parentElement;
+                this._itemCache.set(`method:${m.filePath}:${m.line}`, item);
+                items.push(item);
+            });
+            return items;
+        }
+        if (source.fields.length) {
+            const groupItem = new FieldsGroupItem(source.fields);
+            groupItem._parent = parentElement;
+            this._itemCache.set(`fieldsGroup:${source.filePath}`, groupItem);
+            items.push(groupItem);
+        }
+        if ((source.methods || []).length) {
+            const groupItem = new MethodsGroupItem(source.methods, source.filePath);
+            groupItem._parent = parentElement;
+            this._itemCache.set(`methodsGroup:${source.filePath}`, groupItem);
+            items.push(groupItem);
+        }
+        if (utils.getConfig('modelExplorer.showViews') !== false) {
+            const vf = new ViewsFolderItem(modelName || source.moduleName, _getSourceDirs());
+            vf._parent = parentElement;
+            items.push(vf);
         }
         return items;
     }
 
-    /** Flat merge of fields from all sources (no module grouping) */
-    _fieldsForSources(sources) {
+    _fieldsForSources(sources, modelName, parentElement) {
         const items = [];
         const activeFilter = this._filter || '';
-        const _pq2 = _parseQuery(activeFilter);
-        const fieldQ = _pq2.fieldQ !== undefined ? _pq2.fieldQ : null;
-        const methodQ = _pq2.methodQ !== undefined ? _pq2.methodQ : null;
+        const { fieldQ: fq, methodQ: mq } = _parseQuery(activeFilter);
+        const fieldQ = fq !== undefined ? fq : null;
+        const methodQ = mq !== undefined ? mq : null;
+        const allFields = sources.flatMap(s => s.fields);
+        const allMethods = sources.flatMap(s => s.methods || []);
 
-        if (!methodQ) {
-            const allFields = sources.flatMap(s => s.fields);
+        if (fieldQ !== null) {
             const fields = fieldQ ? allFields.filter(f => f.name.toLowerCase().startsWith(fieldQ)) : allFields;
-            if (fields.length) {
-                fields.forEach(f => {
-                    const item = new FieldItem(f);
-                    this._itemCache.set(`field:${f.filePath}:${f.line}`, item);
-                    items.push(item);
-                });
-            } else if (!fieldQ) {
-                const empty = new vscode.TreeItem('No fields');
-                empty.iconPath = new vscode.ThemeIcon('dash');
-                items.push(empty);
-            }
+            fields.forEach(f => {
+                const item = new FieldItem(f);
+                item._parent = parentElement;
+                this._itemCache.set(`field:${f.filePath}:${f.line}`, item);
+                items.push(item);
+            });
+            return items;
         }
-
-        if (!fieldQ) {
-            const allMethods = sources.flatMap(s => s.methods || []);
+        if (methodQ !== null) {
             const methods = methodQ ? allMethods.filter(m => m.name.toLowerCase().startsWith(methodQ)) : allMethods;
-            if (methods.length) {
-                const groupItem = new MethodsGroupItem(methods, sources[0].filePath);
-                this._itemCache.set(`methodsGroup:${sources[0].filePath}`, groupItem);
-                items.push(groupItem);
-            }
+            methods.forEach(m => {
+                const item = new MethodItem(m);
+                item._parent = parentElement;
+                this._itemCache.set(`method:${m.filePath}:${m.line}`, item);
+                items.push(item);
+            });
+            return items;
+        }
+        if (allFields.length) {
+            const groupItem = new FieldsGroupItem(allFields);
+            groupItem._parent = parentElement;
+            this._itemCache.set(`fieldsGroup:${sources[0].filePath}`, groupItem);
+            items.push(groupItem);
+        }
+        if (allMethods.length) {
+            const groupItem = new MethodsGroupItem(allMethods, sources[0].filePath);
+            groupItem._parent = parentElement;
+            this._itemCache.set(`methodsGroup:${sources[0].filePath}`, groupItem);
+            items.push(groupItem);
+        }
+        if (utils.getConfig('modelExplorer.showViews') !== false) {
+            const vf = new ViewsFolderItem(modelName, _getSourceDirs());
+            vf._parent = parentElement;
+            items.push(vf);
         }
         return items;
     }
@@ -427,6 +628,7 @@ class ModelExplorerProvider {
         }
         return models.map(([name, sources]) => {
             const item = new ModelItem(name, sources);
+            item._parent = null;
             this._itemCache.set(`model:${name}`, item);
             return item;
         });
@@ -489,7 +691,13 @@ class ModelExplorerProvider {
 
     _getCache() {
         if (!this._cache) {
-            this._cache = scanModels(_getSourceDirs());
+            // Use index if ready, fall back to synchronous scan
+            const idx = this._indexMgr;
+            if (idx && idx.isReady()) {
+                this._cache = idx.getModelsMap();
+            } else {
+                this._cache = scanModels(_getSourceDirs());
+            }
             this._updateViewDescription();
         }
         return this._cache;
@@ -523,24 +731,29 @@ class ModelExplorerProvider {
             for (const source of sources) {
                 if (source.filePath !== filePath) continue;
 
-                // Check field line
                 const field = source.fields.find(f => f.line === cursorLine);
                 if (field) {
                     const item = this._itemCache.get(`field:${filePath}:${field.line}`);
                     if (item) this._treeView.reveal(item, { select: true, focus: false, expand: true }).then(null, () => {});
+                    else {
+                        const group = this._itemCache.get(`fieldsGroup:${filePath}`);
+                        if (group) this._treeView.reveal(group, { select: true, focus: false, expand: true }).then(null, () => {});
+                    }
                     return;
                 }
 
-                // Check method line
                 const method = (source.methods || []).find(m => m.line === cursorLine);
                 if (method) {
                     const item = this._itemCache.get(`method:${filePath}:${method.line}`);
                     if (item) this._treeView.reveal(item, { select: true, focus: false, expand: true }).then(null, () => {});
+                    else {
+                        const group = this._itemCache.get(`methodsGroup:${filePath}`);
+                        if (group) this._treeView.reveal(group, { select: true, focus: false, expand: true }).then(null, () => {});
+                    }
                     return;
                 }
 
-                // Reveal model or source
-                if (sources.length > 1) {
+                if (sources.length > 1 && this._groupByModule) {
                     const item = this._itemCache.get(`source:${filePath}`);
                     if (item) this._treeView.reveal(item, { select: true, focus: false, expand: false }).then(null, () => {});
                 } else {
@@ -553,24 +766,30 @@ class ModelExplorerProvider {
     }
 
     _revealFromXml(filePath, cursorLine, cache) {
-        // Read lines up to cursor to find nearest <record model="...">
         let content;
         try { content = fs.readFileSync(filePath, 'utf8'); } catch (_) { return; }
         const lines = content.split('\n');
 
+        // Find the enclosing <record> block, then extract <field name="model">
+        let recordStart = -1;
         for (let i = cursorLine - 1; i >= 0; i--) {
-            const modelMatch = lines[i].match(/model="([^"]+)"/);
-            if (modelMatch) {
-                const modelName = modelMatch[1];
+            if (lines[i].includes('</record>') && i < cursorLine - 1) return; // inside a different record
+            if (/<record[\s>]/.test(lines[i])) { recordStart = i; break; }
+        }
+        if (recordStart === -1) return;
+
+        // Scan forward from record start to find <field name="model">...
+        for (let i = recordStart; i < lines.length && i < recordStart + 60; i++) {
+            if (lines[i].includes('</record>') && i > recordStart) break;
+            const m = lines[i].match(/<field[^>]+name=["']model["'][^>]*>([^<]+)</);
+            if (m) {
+                const modelName = m[1].trim();
                 if (cache.has(modelName)) {
-                    const sources = cache.get(modelName);
-                    const modelItem = new ModelItem(modelName, sources);
-                    this._treeView.reveal(modelItem, { select: true, focus: false, expand: false }).then(null, () => {});
+                    const item = this._itemCache.get(`model:${modelName}`);
+                    if (item) this._treeView.reveal(item, { select: true, focus: false, expand: false }).then(null, () => {});
                 }
                 return;
             }
-            // Stop searching back if we hit another record close tag
-            if (lines[i].includes('</record>') && i < cursorLine - 1) return;
         }
     }
 }
@@ -922,48 +1141,290 @@ class OdooXmlSymbolProvider {
     }
 }
 
+// ── Hover helpers ─────────────────────────────────────────────────
+
+function _gotoLink(label, filePath, line) {
+    const args = encodeURIComponent(JSON.stringify([filePath, line]));
+    return `[${label}](command:odooDebugger.modelExplorer.goto?${args})`;
+}
+
+function _relPath(filePath) {
+    const root = utils.getWorkspaceRoot();
+    return root ? filePath.replace(root + '/', '') : path.basename(filePath);
+}
+
 // ── XML Hover ─────────────────────────────────────────────────────
 
 class OdooXmlHoverProvider {
-    constructor(explorerProvider) {
+    constructor(explorerProvider, indexMgr) {
         this._explorer = explorerProvider;
+        this._idx = indexMgr;
     }
 
     provideHover(document, position) {
+        if (!this._idx.isReady()) return null;
         const line = document.lineAt(position).text;
 
-        // Hover on ref="module.xml_id"
-        const refMatch = line.match(/ref="([^"]+)"/);
-        if (refMatch) {
-            const xmlId = refMatch[1];
-            const md = new vscode.MarkdownString(`**XML ID:** \`${xmlId}\`\n\nRight-click → Go to XML ID, or use \`Ctrl+Shift+X\``);
-            return new vscode.Hover(md);
-        }
+        // inherit_id ref="..."
+        const inheritMatch = line.match(/name=["']inherit_id["'][^>]+ref=["']([^"']+)["']/);
+        if (inheritMatch) return this._viewHover(inheritMatch[1], document.uri.fsPath);
 
-        // Hover on model="res.partner"
-        const modelMatch = line.match(/model="([^"]+)"/);
-        if (modelMatch) {
-            const modelName = modelMatch[1];
-            const cache = this._explorer._getCache();
-            if (cache.has(modelName)) {
-                const sources = cache.get(modelName);
-                const lines = sources.map(s => `- \`${s.moduleName}\` (${s.isInherit ? 'inherit' : 'defined'})`).join('\n');
-                const md = new vscode.MarkdownString(`**Model:** \`${modelName}\`\n\n${lines}`);
-                return new vscode.Hover(md);
+        // id="xml_id"
+        const idMatch = line.match(/\bid=["']([^"']+)["']/);
+        if (idMatch) return this._viewHover(idMatch[1], document.uri.fsPath);
+
+        // ref="module.xml_id"
+        const refMatch = line.match(/\bref=["']([^"']+)["']/);
+        if (refMatch) return this._viewHover(refMatch[1], document.uri.fsPath);
+
+        // model="res.partner"
+        const modelMatch = line.match(/model=["']([^"']+)["']/);
+        if (modelMatch && modelMatch[1] !== 'ir.ui.view') return this._modelHover(modelMatch[1], document.uri.fsPath);
+
+        return null;
+    }
+
+    _viewHover(xmlId, currentFile) {
+        const tree = this._idx.buildViewTree(xmlId);
+        if (!tree) return null;
+
+        const lines2 = [];
+        const render = (v, depth) => {
+            const isRoot = depth === 0;
+            const isCurrent = v.filePath === currentFile;
+            const indent = depth === 0 ? '' : ('  '.repeat(depth - 1) + (depth === 1 ? '└─ ' : '   └─ '));
+
+            if (v._stub) {
+                lines2.push(`${indent}\`${v.fullXmlId}\` *(external)*`);
+            } else {
+                const rel = _relPath(v.filePath);
+                const label = `${rel}:${v.line}`;
+                // Don't link the current file — user is already there
+                const entry = isCurrent ? `**${rel}:${v.line}**` : _gotoLink(label, v.filePath, v.line);
+                lines2.push(`${indent}${entry}`);
             }
-            return new vscode.Hover(new vscode.MarkdownString(`**Model:** \`${modelName}\``));
+            for (const child of (tree.childrenMap.get(v.xmlId) || [])) render(child, depth + 1);
+        };
+
+        const rootLabel = tree.root.xmlId || xmlId;
+        const vt = tree.root.viewType ? ` \`[${tree.root.viewType}]\`` : '';
+        lines2.push(`**View:** \`${rootLabel}\`${vt}`);
+        render(tree.root, 0);
+
+        const md = new vscode.MarkdownString(lines2.join('\n\n'));
+        md.isTrusted = true;
+        return new vscode.Hover(md);
+    }
+
+    _modelHover(modelName, currentFile) {
+        const sources = this._idx.getModel(modelName);
+        if (!sources.length) return null;
+        const lines2 = [`**Model:** \`${modelName}\``];
+        for (const s of sources) {
+            const rel = _relPath(s.filePath);
+            const isCurrent = s.filePath === currentFile;
+            const tag = s.isInherit ? '↳' : '✦';
+            const label = `${rel}:${s.line}`;
+            lines2.push(`${tag} ${isCurrent ? `**${label}**` : _gotoLink(label, s.filePath, s.line)}`);
+        }
+        const md = new vscode.MarkdownString(lines2.join('\n\n'));
+        md.isTrusted = true;
+        return new vscode.Hover(md);
+    }
+}
+
+// ── Python Hover ──────────────────────────────────────────────────
+
+class OdooPyHoverProvider {
+    constructor(explorerProvider, indexMgr) {
+        this._explorer = explorerProvider;
+        this._idx = indexMgr;
+    }
+
+    provideHover(document, position) {
+        if (!this._idx.isReady()) return null;
+        const line = document.lineAt(position).text;
+        const filePath = document.uri.fsPath;
+
+        // class ClassName(models.Model):
+        const classMatch = line.match(/^class\s+(\w+)\s*\(.*models\.(Model|TransientModel|AbstractModel)/);
+        if (classMatch) {
+            const modelName = this._modelNameFromClass(document, position.line);
+            if (modelName) return this._modelHover(modelName, filePath);
         }
 
-        // Hover on inherit_id ref
-        const inheritMatch = line.match(/name="inherit_id"[^>]*ref="([^"]+)"/);
-        if (inheritMatch) {
-            const md = new vscode.MarkdownString(`**Inherits view:** \`${inheritMatch[1]}\`\n\nUse \`Ctrl+Shift+X\` to navigate`);
-            return new vscode.Hover(md);
+        // _name = 'x' or _inherit = 'x'
+        const nameMatch = line.match(/^\s*_(?:name|inherit)\s*=\s*["']([^"']+)["']/);
+        if (nameMatch) return this._modelHover(nameMatch[1], filePath);
+
+        // field = fields.Type(
+        const fieldMatch = line.match(/^\s*(\w+)\s*=\s*fields\.(\w+)\s*\(/);
+        if (fieldMatch) return this._fieldHover(fieldMatch[1], fieldMatch[2], filePath, position);
+
+        // def method_name( — definition
+        const defMatch = line.match(/^\s*def\s+(\w+)\s*\(/);
+        if (defMatch) return this._functionHover(defMatch[1], filePath, document, position);
+
+        // method call: self.method( or rec.method( or any.method(
+        const callRange = document.getWordRangeAtPosition(position, /[a-zA-Z_]\w*/);
+        if (callRange) {
+            const word = document.getText(callRange);
+            // check char before word is '.' and char after is '('
+            const lineText = line;
+            const wordStart = callRange.start.character;
+            const wordEnd = callRange.end.character;
+            const before = wordStart > 0 ? lineText[wordStart - 1] : '';
+            const after = lineText[wordEnd] || '';
+            if (before === '.' && (after === '(' || lineText.slice(wordEnd).trimStart().startsWith('('))) {
+                // it's a method call — show same hover as definition
+                return this._functionHover(word, filePath, document, position);
+            }
+        }
+
+        // 'res.partner' quoted model string
+        const wordRange = document.getWordRangeAtPosition(position, /["'][a-z][a-z0-9_.]+["']/);
+        if (wordRange) {
+            const word = document.getText(wordRange).replace(/["']/g, '');
+            if (word.includes('.') && this._idx.getModel(word).length) return this._modelHover(word, filePath);
         }
 
         return null;
     }
+
+    _modelNameFromClass(document, classLineIdx) {
+        for (let i = classLineIdx + 1; i < Math.min(classLineIdx + 20, document.lineCount); i++) {
+            const l = document.lineAt(i).text;
+            if (/^class\s+/.test(l)) break;
+            const m = l.match(/^\s*_(?:name|inherit)\s*=\s*["']([^"']+)["']/);
+            if (m) return m[1];
+        }
+        return null;
+    }
+
+    _modelHover(modelName, currentFile) {
+        const sources = this._idx.getModel(modelName);
+        if (!sources.length) return null;
+        const lines2 = [`**Model:** \`${modelName}\``];
+        for (const s of sources) {
+            const rel = _relPath(s.filePath);
+            const isCurrent = s.filePath === currentFile;
+            const tag = s.isInherit ? '↳' : '✦';
+            const label = `${rel}:${s.line}`;
+            lines2.push(`${tag} ${isCurrent ? `**${label}**` : _gotoLink(label, s.filePath, s.line)}`);
+        }
+        const md = new vscode.MarkdownString(lines2.join('\n\n'));
+        md.isTrusted = true;
+        return new vscode.Hover(md);
+    }
+
+    _fieldHover(fieldName, fieldType, filePath, position) {
+        const modelName = this._idx.findModelForField(filePath, fieldName);
+        const lines2 = [`**Field:** \`${fieldName}\` — \`fields.${fieldType}\``];
+        if (modelName) lines2.push(`Model: \`${modelName}\``);
+
+        // XML usages from index — O(1)
+        const usages = modelName ? this._idx.getFieldXml(modelName, fieldName) : [];
+        if (usages.length) {
+            lines2.push('**Used in views:**');
+            for (const u of usages.slice(0, 12)) {
+                const rel = _relPath(u.filePath);
+                const vt = u.viewType ? ` [${u.viewType}]` : '';
+                const id = u.recordId ? u.recordId.split('.').pop() : '';
+                const label = `${id}${vt}  ${rel}:${u.line}`;
+                lines2.push(`└─ ${_gotoLink(label, u.filePath, u.line)}`);
+            }
+            if (usages.length > 12) lines2.push(`*...and ${usages.length - 12} more*`);
+        } else {
+            lines2.push('*No XML views found*');
+        }
+
+        const md = new vscode.MarkdownString(lines2.join('\n\n'));
+        md.isTrusted = true;
+        return new vscode.Hover(md);
+    }
+
+    _functionHover(methodName, filePath, document, position) {
+        const modelName = this._idx.findModelForMethod(filePath, methodName);
+
+        let decorator = '';
+        for (let i = position.line - 1; i >= Math.max(0, position.line - 3); i--) {
+            const prev = document.lineAt(i).text.trim();
+            if (prev.startsWith('@')) { decorator = prev; break; }
+            if (prev && !prev.startsWith('#')) break;
+        }
+
+        const lines2 = [`**Function:** \`${methodName}\``];
+        if (decorator) lines2.push(`\`${decorator}\``);
+        if (modelName) lines2.push(`Model: \`${modelName}\``);
+
+        // Override chain — separate defined vs overrides
+        const overrides = modelName ? this._idx.getFunction(modelName, methodName) : [];
+        const defined = overrides.find(o => !o.isInherit);
+        const inherited = overrides.filter(o => o.isInherit);
+
+        if (defined) {
+            const rel = _relPath(defined.filePath);
+            const isCurrent = defined.filePath === filePath;
+            const label = `${rel}:${defined.line}`;
+            lines2.push(`**Defined:** ${isCurrent ? `**${label}**` : _gotoLink(label, defined.filePath, defined.line)}`);
+        }
+        if (inherited.length) {
+            lines2.push('**Overridden in:**');
+            for (const o of inherited) {
+                const rel = _relPath(o.filePath);
+                const isCurrent = o.filePath === filePath;
+                const label = `${rel}:${o.line}`;
+                lines2.push(`↳ ${isCurrent ? `**${label}**` : _gotoLink(label, o.filePath, o.line)}`);
+            }
+        }
+
+        // Callers — grep for .methodName( across workspace
+        const callers = this._findCallers(methodName);
+        if (callers.length) {
+            lines2.push('**Called from:**');
+            for (const c of callers.slice(0, 8)) {
+                const rel = _relPath(c.filePath);
+                const snippet = c.snippet ? `  \`${c.snippet}\`` : '';
+                lines2.push(`└─ ${_gotoLink(`${rel}:${c.line}`, c.filePath, c.line)}${snippet}`);
+            }
+            if (callers.length > 8) lines2.push(`*...and ${callers.length - 8} more*`);
+        }
+
+        const md = new vscode.MarkdownString(lines2.join('\n\n'));
+        md.isTrusted = true;
+        return new vscode.Hover(md);
+    }
+
+    _findCallers(methodName) {
+        // Search only in configured addons dirs, not entire workspace
+        const dirs = _getSourceDirs();
+        if (!dirs.length) return [];
+        try {
+            const { execSync } = require('child_process');
+            const dirArgs = dirs.map(d => `'${d}'`).join(' ');
+            // Simple pattern: .methodName( — fast, no complex regex
+            const out = execSync(
+                `grep -rn --include='*.py' '\.${methodName}(' ${dirArgs}`,
+                { encoding: 'utf8', timeout: 5000, maxBuffer: 2 * 1024 * 1024 }
+            );
+            return out.trim().split('\n').filter(Boolean).map(l => {
+                const colonIdx = l.indexOf(':');
+                const secondColon = l.indexOf(':', colonIdx + 1);
+                if (colonIdx === -1 || secondColon === -1) return null;
+                const filePath = l.slice(0, colonIdx);
+                const line = parseInt(l.slice(colonIdx + 1, secondColon), 10);
+                const snippet = l.slice(secondColon + 1).trim().slice(0, 80);
+                if (!filePath || isNaN(line)) return null;
+                // skip def lines (the definition itself)
+                if (/^\s*def\s+/.test(snippet)) return null;
+                // skip comment lines
+                if (/^\s*#/.test(snippet)) return null;
+                return { filePath, line, snippet };
+            }).filter(Boolean);
+        } catch (_) { return []; }
+    }
 }
+
 
 // ── Search / filter ────────────────────────────────────────────────
 
@@ -1035,7 +1496,7 @@ async function _unifiedSearch(cache, mode, provider, initialValue) {
     const HINT_ITEMS = [
         { label: '$(symbol-class) Models', description: 'plain text — search by model name', _prefix: '' },
         { label: '$(symbol-field) @ Fields', description: '@ — models with field starting with...', _prefix: '@' },
-        { label: '$(symbol-method) # Methods', description: '# — models with method starting with...', _prefix: '#' },
+        { label: '$(symbol-method) # Functions', description: '# — models with function starting with...', _prefix: '#' },
         { label: '$(folder) : Modules', description: ': — filter by module name', _prefix: ':' },
     ];
 
@@ -1279,7 +1740,7 @@ async function quickFind(getCache) {
     const HINTS = [
         { label: '$(symbol-class) Models', description: 'plain text — search by model name', _isHint: true, _prefix: '' },
         { label: '$(symbol-field) @ Fields', description: '@ — search fields (e.g. @name)', _isHint: true, _prefix: '@' },
-        { label: '$(symbol-method) # Methods', description: '# — search methods (e.g. #action_confirm)', _isHint: true, _prefix: '#' },
+        { label: '$(symbol-method) # Functions', description: '# — search functions (e.g. #action_confirm)', _isHint: true, _prefix: '#' },
         { label: '$(folder) : Modules', description: ': — search by module (e.g. :sale)', _isHint: true, _prefix: ':' },
     ];
 
@@ -1430,7 +1891,7 @@ async function quickFind(getCache) {
 
 module.exports = {
     ModelExplorerProvider, FieldItem, ModelItem, SourceItem,
-    OdooXmlSymbolProvider, OdooXmlHoverProvider,
+    OdooXmlSymbolProvider, OdooXmlHoverProvider, OdooPyHoverProvider,
     gotoLocation, openModelInBrowser, gotoXmlView, gotoFieldXml, findMethodUsages,
     searchModels, configureSources, filterModelType, sortModels, toggleGroupByModule, quickFind,
     CTX_FILTER_ACTIVE,

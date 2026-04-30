@@ -178,17 +178,19 @@ async function switchDatabase() {
 // ── Status Bar ─────────────────────────────────────────────────────
 
 let _statusBarItem;
+let _indexMgr = null; // set by indexManager when it starts
 
 function createStatusBar() {
     _statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
     _statusBarItem.command = 'odooDebugger.switchDatabase';
     updateStatusBar();
     _statusBarItem.show();
-
-    // Listen for state changes
     utils.onServerStateChange(() => updateStatusBar());
-
     return _statusBarItem;
+}
+
+function setIndexManager(mgr) {
+    _indexMgr = mgr;
 }
 
 function updateStatusBar() {
@@ -198,20 +200,31 @@ function updateStatusBar() {
     const venv = utils.getVenvDir();
     const venvName = venv ? require('path').basename(venv) : 'system';
 
+    // Index suffix
+    let idxSuffix = '';
+    if (_indexMgr) {
+        if (_indexMgr.isReady()) {
+            const mc = _indexMgr.getModelsMap ? _indexMgr.getModelsMap().size : 0;
+            idxSuffix = mc ? ` | ${mc}m` : '';
+        } else {
+            idxSuffix = ' | $(sync~spin)';
+        }
+    }
+
     if (state === 'running') {
-        _statusBarItem.text = `$(debug-start) Odoo: ${db} ● Running`;
+        _statusBarItem.text = `$(debug-start) Odoo: ${db} ● Running${idxSuffix}`;
         _statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.activeBackground');
         _statusBarItem.color = '#4ec94e';
     } else if (state === 'debugging') {
-        _statusBarItem.text = `$(debug) Odoo: ${db} ● Debugging`;
+        _statusBarItem.text = `$(ea71) Odoo: ${db} ● Debugging${idxSuffix}`;
         _statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.activeBackground');
         _statusBarItem.color = '#e8c44d';
-    } else if (state === 'building') {
-        _statusBarItem.text = `$(sync~spin) Odoo: ${db} ● Building`;
+    } else if (state === 'building' || state === 'starting') {
+        _statusBarItem.text = `$(sync~spin) Odoo: ${db} ● Building${idxSuffix}`;
         _statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
         _statusBarItem.color = '#ff9999';
     } else {
-        _statusBarItem.text = `$(database) Odoo: ${db}`;
+        _statusBarItem.text = `$(database) Odoo: ${db}${idxSuffix}`;
         _statusBarItem.backgroundColor = undefined;
         _statusBarItem.color = undefined;
     }
@@ -222,5 +235,5 @@ module.exports = {
     killPython, startPostgres,
     openOdoo, openApps, openDebugMode, clearAssets,
     removeUnusedImports, dropDatabase, copyDatabase, switchDatabase,
-    createStatusBar, updateStatusBar,
+    createStatusBar, updateStatusBar, setIndexManager,
 };

@@ -10,23 +10,23 @@ function getBuildPrevState() { const s = _buildPrevState; _buildPrevState = null
 // ── Run / Debug / Stop ─────────────────────────────────────────────
 
 /** Auto-stop server if running, returns true if ready to proceed */
-async function _ensureStopped(waitForPort = true) {
-    if (utils.getServerState() === 'stopped') return true;
+async function _ensureStopped(waitForPort = true, silent = false) {
+    if (utils.getServerState() === 'stopped' || utils.getServerState() === 'starting') return true;
     // Both run (noDebug) and debug use a debug session
     if (vscode.debug.activeDebugSession) {
         await vscode.debug.stopDebugging();
     }
     const terminal = utils.getServerTerminal();
     if (terminal) terminal.dispose();
-    utils.setServerState('stopped', null);
+    if (!silent) utils.setServerState('stopped', null);
     // Fixed delay — enough for OS to release the port after stopDebugging()
     await new Promise(r => setTimeout(r, waitForPort ? 500 : 300));
     return true;
 }
 
 async function runOdoo() {
-    await _ensureStopped();
-    utils.setServerState('starting', null);
+    utils.setServerState('starting', null); // immediate UI feedback
+    await _ensureStopped(true, true);       // silent=true — don't overwrite 'starting'
     const odooBin = await utils.resolveOdooBin();
     if (!odooBin) { utils.setServerState('stopped', null); return; }
     const args = utils.buildOdooArgs();
@@ -54,8 +54,8 @@ async function runOdoo() {
 }
 
 async function debugOdoo() {
-    await _ensureStopped();
-    utils.setServerState('starting', null);
+    utils.setServerState('starting', null); // immediate UI feedback
+    await _ensureStopped(true, true);       // silent=true — don't overwrite 'starting'
     const odooBin = await utils.resolveOdooBin();
     if (!odooBin) { utils.setServerState('stopped', null); return; }
     const args = utils.buildOdooArgs();

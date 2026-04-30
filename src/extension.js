@@ -3,12 +3,13 @@ const server = require('./server');
 const navigation = require('./navigation');
 const utilities = require('./utilities');
 const logViewer = require('./logViewer');
-const { OdooSidebarProvider } = require('./sidebarPanel');
+const { OdooSidebarProvider, OdooToolsProvider } = require('./sidebarPanel');
 const { OdooLogPanelProvider } = require('./logPanel');
-const { ModelExplorerProvider, FieldItem, ModelItem, OdooXmlSymbolProvider, OdooXmlHoverProvider, gotoLocation, openModelInBrowser, gotoXmlView, gotoFieldXml, findMethodUsages, searchModels, configureSources, filterModelType, sortModels, toggleGroupByModule, quickFind, CTX_FILTER_ACTIVE } = require('./modelExplorer');
+const { ModelExplorerProvider, FieldItem, ModelItem, OdooXmlSymbolProvider, OdooXmlHoverProvider, OdooPyHoverProvider, gotoLocation, openModelInBrowser, gotoXmlView, gotoFieldXml, findMethodUsages, searchModels, configureSources, filterModelType, sortModels, toggleGroupByModule, quickFind, CTX_FILTER_ACTIVE } = require('./modelExplorer');
 const { BreakpointExplorerProvider, gotoBreakpoint, toggleBreakpoint, removeBreakpoint, enableAllBreakpoints, disableAllBreakpoints, clearAllBreakpoints } = require('./breakpointExplorer');
 const { SqlToolsProvider, CTX_SQL_FILTER, runSql, filterTables, browseTable, showTableColumns, copySelectStatement } = require('./sqlTools');
 const dataBrowser = require('./dataBrowser');
+const indexManager = require('./indexManager');
 const utils = require('./utils');
 
 function activate(context) {
@@ -20,12 +21,12 @@ function activate(context) {
     const sidebarProvider = new OdooSidebarProvider(context);
     context.subscriptions.push(
         vscode.window.registerWebviewViewProvider('odooDebugger.sidebar', sidebarProvider, {
-            webviewOptions: { retainContextWhenHidden: true }
+            webviewOptions: { retainContextWhenHidden: false }
         })
     );
 
     // Model Explorer tree view
-    const modelExplorer = new ModelExplorerProvider();
+    const modelExplorer = new ModelExplorerProvider(indexManager);
     const modelExplorerView = vscode.window.createTreeView('odooDebugger.modelExplorer', {
         treeDataProvider: modelExplorer,
         showCollapseAll: true,
@@ -57,9 +58,40 @@ function activate(context) {
     context.subscriptions.push(
         vscode.languages.registerHoverProvider(
             { language: 'xml', pattern: '**/*.xml' },
-            new OdooXmlHoverProvider(modelExplorer)
+            new OdooXmlHoverProvider(modelExplorer, indexManager)
         )
     );
+
+    // Python Hover provider
+    context.subscriptions.push(
+        vscode.languages.registerHoverProvider(
+            { language: 'python' },
+            new OdooPyHoverProvider(modelExplorer, indexManager)
+        )
+    );
+
+    // Start background index workers
+    const addonsDirs = utils.getCustomAddonsPaths();
+    utilities.setIndexManager(indexManager);
+    indexManager.startIndex(addonsDirs, utilities);
+    // When index is ready, refresh tree so it uses indexed data
+    indexManager.onReady(() => {
+        modelExplorer.refresh();
+        utilities.updateStatusBar();
+    });
+
+    // File watcher — re-index on py/xml save
+    const pyWatcher = vscode.workspace.createFileSystemWatcher('**/*.py');
+    const xmlWatcher = vscode.workspace.createFileSystemWatcher('**/*.xml');
+    const reindexOnChange = () => indexManager.reindex(utils.getCustomAddonsPaths());
+    context.subscriptions.push(
+        pyWatcher.onDidChange(reindexOnChange),
+        pyWatcher.onDidCreate(reindexOnChange),
+        xmlWatcher.onDidChange(reindexOnChange),
+        xmlWatcher.onDidCreate(reindexOnChange),
+        pyWatcher, xmlWatcher
+    );
+    context.subscriptions.push({ dispose: () => indexManager.dispose() });
 
     // Breakpoint Explorer tree view
     const bpExplorer = new BreakpointExplorerProvider();
@@ -78,6 +110,14 @@ function activate(context) {
         showCollapseAll: false,
     });
     context.subscriptions.push(sqlView);
+
+    // Tools webview (Logs, JS Debug, Tools — collapsed by default)
+    const toolsProvider = new OdooToolsProvider(context);
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider('odooDebugger.tools', toolsProvider, {
+            webviewOptions: { retainContextWhenHidden: true }
+        })
+    );
 
     // Log Panel (bottom panel)
     const logPanelProvider = new OdooLogPanelProvider(context);
@@ -184,7 +224,8 @@ function activate(context) {
         'odooDebugger.modelExplorer.toggleGroupByModule': () => toggleGroupByModule(modelExplorer),
         'odooDebugger.quickFind': () => quickFind(() => modelExplorer._getCache()),
         'odooDebugger.focusPanel': () => vscode.commands.executeCommand('workbench.view.extension.odoo-dev'),
-        'odooDebugger.modelExplorer.configureSources': async () => { await configureSources(); modelExplorer.refresh(); },
+        'odooDebugger.modelExplorer.configureSources': async () => { await configureSources(); modelExplorer.refresh(); indexManager.reindex(utils.getCustomAddonsPaths()); },
+        'odooDebugger.modelExplorer.moveToPanel': () => vscode.commands.executeCommand('workbench.action.moveViewToPanel', 'odooDebugger.modelExplorer'),
         // Breakpoints
         'odooDebugger.breakpoints.goto': gotoBreakpoint,
         'odooDebugger.breakpoints.toggle': (item) => toggleBreakpoint(item.bp),
@@ -254,9 +295,9 @@ function activate(context) {
         })
     );
 
-    // Start log panel tailing when server starts
+    // Start log panel tailing when Odoo writes to the configured log file.
     utils.onServerStateChange(state => {
-        if (state === 'running' || state === 'debugging') logViewer.onServerStart();
+        if (state === 'running' || state === 'debugging' || state === 'building') logViewer.onServerStart();
         else if (state === 'stopped') logViewer.onServerStop();
     });
 
@@ -337,7 +378,7 @@ function activate(context) {
     // Cleanup on deactivate
     context.subscriptions.push({ dispose: () => logViewer.dispose() });
 
-    console.log('Odoo Debugger v1.3.5 activated');
+    console.log('Odoo Debugger v1.4.0 activated');
 }
 
 function deactivate() {

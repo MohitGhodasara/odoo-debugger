@@ -6,7 +6,7 @@ const utils = require('./utils');
 const I = {
     run:      '\uead3', stop:     '\uead7', restart:  '\uead2',
     stepOver: '\uead6', stepInto: '\uead4', stepOut:  '\uead5',
-    cont:     '\ueacf', pause:    '\uead1', debug:    '\ueb91',
+    cont:     '\ueacf', pause:    '\uead1', debug:    '\uea71',
     refresh:  '\ueb37', close:    '\uea76', search:   '\uea6d',
     gear:     '\ueb51', folder:   '\uea83', db:       '\ueace',
     play:     '\ueb2c', trash:    '\uea81', clear:    '\ueabf',
@@ -96,12 +96,12 @@ class OdooSidebarProvider {
             hover:   'var(--vscode-toolbar-hoverBackground,#ffffff18)',
         };
 
-        const btn = (icon, cmd, title, color, disabled = false) =>
-            `<button class="dbg-btn" style="color:${color}" ${disabled ? 'disabled' : `onclick="cmd('${cmd}')"`} title="${title}">${icon}</button>`;
+        const btn = (icon, cmd, title, color, disabled = false, extraStyle = '') =>
+            `<button class="dbg-btn" style="color:${color};${extraStyle}" ${disabled ? 'disabled' : `onclick="cmd('${cmd}')"`} title="${title}">${icon}</button>`;
 
         const toolbar = isStopped ? `
             ${btn(I.run,   'odooDebugger.runOdoo',   'Run (Ctrl+Shift+R)',   C.run)}
-            ${btn(I.debug, 'odooDebugger.debugOdoo', 'Debug (Ctrl+Shift+D)', C.debug)}` :
+            ${btn(I.debug, 'odooDebugger.debugOdoo', 'Debug (Ctrl+Shift+D)', C.debug, false, 'font-size:20px')}` :
             `${btn(I.cont,     'workbench.action.debug.continue', 'Continue (F5)',      C.step,    !isDebugging)}
             ${btn(I.stepOver, 'workbench.action.debug.stepOver',  'Step Over (F10)',    C.step,    !isDebugging)}
             ${btn(I.stepInto, 'workbench.action.debug.stepInto',  'Step Into (F11)',    C.step,    !isDebugging)}
@@ -114,7 +114,7 @@ class OdooSidebarProvider {
             `<button class="sb" onclick="cmd('${cmd}')" title="${title}"><span class="ic">${icon}</span><span>${short || title}</span></button>`;
 
         return /*html*/`<!DOCTYPE html>
-<html><head><style>
+<html><head><meta charset="UTF-8"><style>
 @font-face { font-family: codicon; src: url('${fontUri}') format('truetype'); }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { padding: 8px 8px 16px 8px; font-family: var(--vscode-font-family); font-size: var(--vscode-font-size); color: var(--vscode-foreground); overflow-x: hidden; }
@@ -187,60 +187,10 @@ details > .content { padding-top:6px; }
     </div>
 </div>
 
-<div class="section">
-    <div class="section-title">Logs</div>
-    <div class="grid grid-2">
-        ${sb2(I.output, 'odooDebugger.openLogPanel', 'Open Log Panel', 'Log Panel')}
-    </div>
-</div>
-
-<details>
-    <summary>JS Debug</summary>
-    <div class="content">
-        <div class="grid grid-2">
-            ${sb2(I.debug,  'odooDebugger.launchChromeDebug', 'Launch Chrome Debug', 'Chrome')}
-            ${sb2(I.globe,  'odooDebugger.attachJsDebugger',  'Attach JS Debugger',  'Attach JS')}
-        </div>
-    </div>
-</details>
-
-<details>
-    <summary>Tools</summary>
-    <div class="content">
-        <div class="grid grid-3">
-            ${sb2(I.gear,   'odooDebugger.openConfFile',  'Open Odoo Config File',   'Config')}
-            ${sb2(I.search, 'odooDebugger.quickFind',    'Quick Find (Ctrl+Alt+N)', 'Find')}
-            ${sb2(I.shell,  'odooDebugger.openShell',    'Open Odoo Shell',         'Shell')}
-            ${sb2(I.globe,  'odooDebugger.openOdoo',     'Open Odoo in Browser',    'Open')}
-            ${sb2(I.globe,  'odooDebugger.openApps',     'Open Apps',               'Apps')}
-            ${sb2(I.db,     'odooDebugger.copyDatabase', 'Copy Database',            'Copy DB')}
-            ${sb2(I.globe,  'odooDebugger.openDebugMode','Open Debug Mode',          'Debug URL')}
-            ${sb2(I.clear,  'odooDebugger.clearAssets',  'Clear Asset Bundles',      'Assets')}
-            ${sb2(I.trash,  'odooDebugger.uninstallModule','Uninstall Module',       'Uninstall')}
-            ${sb2(I.folder, 'odooDebugger.scaffoldModule','Scaffold New Module',     'Scaffold')}
-            ${sb2(I.play,   'odooDebugger.startPostgres', 'Start PostgreSQL',        'Start PG')}
-            ${sb2(I.stop,   'odooDebugger.killPython',    'Kill Odoo Processes',     'Kill Py')}
-        </div>
-        <div class="grid grid-2 mt">
-            <button class="sb danger" onclick="cmd('odooDebugger.dropDatabase')" title="Drop Database"><span class="ic">${I.trash}</span> <span>Drop DB</span></button>
-        </div>
-    </div>
-</details>
-
 <script>
     const vscode = acquireVsCodeApi();
-    const prevState = vscode.getState() || {};
     function cmd(c) { vscode.postMessage({ command: c }); }
     function gotoFrame(f, l) { vscode.postMessage({ command: 'gotoFrame', file: f, line: l }); }
-    document.querySelectorAll('details').forEach(d => {
-        const key = 'det_' + d.querySelector('summary')?.textContent?.trim();
-        if (prevState[key]) d.open = true;
-        d.addEventListener('toggle', () => {
-            const s = vscode.getState() || {};
-            s[key] = d.open;
-            vscode.setState(s);
-        });
-    });
 </script>
 </body></html>`;
     }
@@ -248,4 +198,91 @@ details > .content { padding-top:6px; }
 
 }
 
-module.exports = { OdooSidebarProvider };
+class OdooToolsProvider {
+    constructor(context) {
+        this._context = context;
+        this._view = null;
+    }
+
+    resolveWebviewView(webviewView) {
+        this._view = webviewView;
+        const fontUri = webviewView.webview.asWebviewUri(
+            vscode.Uri.joinPath(this._context.extensionUri, 'resources', 'codicon.ttf')
+        );
+        webviewView.webview.options = {
+            enableScripts: true,
+            localResourceRoots: [vscode.Uri.joinPath(this._context.extensionUri, 'resources')]
+        };
+        webviewView.webview.onDidReceiveMessage(msg => {
+            if (msg.command) vscode.commands.executeCommand(msg.command);
+        });
+        webviewView.webview.html = this._getHtml(fontUri);
+    }
+
+    _getHtml(fontUri) {
+        const I2 = I; // use same codicon map
+        const sb2 = (icon, cmd, title, short) =>
+            `<button class="sb" onclick="cmd('${cmd}')" title="${title}"><span class="ic">${icon}</span><span>${short || title}</span></button>`;
+
+        const css =
+            `@font-face{font-family:codicon;src:url('${fontUri}') format('truetype')}` +
+            `*{box-sizing:border-box;margin:0;padding:0}` +
+            `body{padding:8px 8px 16px 8px;font-family:var(--vscode-font-family);font-size:var(--vscode-font-size);color:var(--vscode-foreground);overflow-x:hidden}` +
+            `.grid{display:grid;gap:3px}.grid-2{grid-template-columns:1fr 1fr}.grid-3{grid-template-columns:1fr 1fr 1fr}.mt{margin-top:3px}` +
+            `.sb{display:flex;align-items:center;gap:5px;padding:4px 8px;border:1px solid var(--vscode-widget-border,#555);border-radius:4px;cursor:pointer;font-size:12px;font-family:var(--vscode-font-family);background:var(--vscode-debugToolBar-background,#2d2d2d);color:var(--vscode-foreground);height:28px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background 0.1s}` +
+            `.sb:hover{background:var(--vscode-toolbar-hoverBackground,#ffffff18)}.sb:active{opacity:0.7}` +
+            `.sb .ic{font-family:codicon;font-size:14px;flex-shrink:0;line-height:1}.sb span{overflow:hidden;text-overflow:ellipsis}` +
+            `.sb.danger{background:#5a1d1d;color:#f48771;border-color:#be110033}.sb.danger:hover{background:#6b2222}` +
+            `details{margin-bottom:6px}` +
+            `details>summary{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.8px;color:var(--vscode-descriptionForeground);cursor:pointer;padding:5px 6px;list-style:none;user-select:none;border-radius:3px;border-top:1px solid var(--vscode-widget-border,#3c3c3c33);margin-top:2px}` +
+            `details>summary::before{content:'\u25b8 ';font-size:9px}details[open]>summary::before{content:'\u25be ';font-size:9px}` +
+            `details>summary:hover{color:var(--vscode-foreground);background:var(--vscode-list-hoverBackground)}` +
+            `details>.content{padding-top:6px}`;
+
+        return `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>${css}</style></head><body>
+<details open data-always-open>
+    <summary>JS Debug</summary>
+    <div class="content"><div class="grid grid-2">
+        ${sb2(I2.debug, 'odooDebugger.launchChromeDebug', 'Launch Chrome Debug', 'Chrome')}
+        ${sb2(I2.globe, 'odooDebugger.attachJsDebugger',  'Attach JS Debugger',  'Attach JS')}
+    </div></div>
+</details>
+<details>
+    <summary>Tools</summary>
+    <div class="content"><div class="grid grid-3">
+        ${sb2(I2.gear,   'odooDebugger.openSettings',     'Open Settings',           'Settings')}
+        ${sb2(I2.search, 'odooDebugger.quickFind',         'Quick Find (Ctrl+Alt+N)', 'Find')}
+        ${sb2(I2.shell,  'odooDebugger.openShell',         'Open Odoo Shell',         'Shell')}
+        ${sb2(I2.globe,  'odooDebugger.openOdoo',          'Open Odoo in Browser',    'Open')}
+        ${sb2(I2.globe,  'odooDebugger.openApps',          'Open Apps',               'Apps')}
+        ${sb2(I2.db,     'odooDebugger.copyDatabase',      'Copy Database',            'Copy DB')}
+        ${sb2(I2.globe,  'odooDebugger.openDebugMode',     'Open Debug Mode',          'Debug URL')}
+        ${sb2(I2.clear,  'odooDebugger.clearAssets',       'Clear Asset Bundles',      'Assets')}
+        ${sb2(I2.trash,  'odooDebugger.uninstallModule',   'Uninstall Module',         'Uninstall')}
+        ${sb2(I2.folder, 'odooDebugger.scaffoldModule',    'Scaffold New Module',      'Scaffold')}
+        ${sb2(I2.play,   'odooDebugger.startPostgres',     'Start PostgreSQL',         'Start PG')}
+        ${sb2(I2.stop,   'odooDebugger.killPython',        'Kill Odoo Processes',      'Kill Py')}
+    </div>
+    <div class="grid grid-2 mt">
+        <button class="sb danger" onclick="cmd('odooDebugger.dropDatabase')" title="Drop Database"><span class="ic">${I2.trash}</span><span>Drop DB</span></button>
+    </div></div>
+</details>
+<script>
+    const vscode = acquireVsCodeApi();
+    const prevState = vscode.getState() || {};
+    function cmd(c) { vscode.postMessage({ command: c }); }
+    document.querySelectorAll('details').forEach(d => {
+        const key = 'det_' + d.querySelector('summary')?.textContent?.trim();
+        const alwaysOpen = d.hasAttribute('data-always-open');
+        if (!alwaysOpen && prevState[key] !== undefined) d.open = prevState[key];
+        d.addEventListener('toggle', () => {
+            const s = vscode.getState() || {};
+            s[key] = d.open;
+            vscode.setState(s);
+        });
+    });
+</script></body></html>`;
+    }
+}
+
+module.exports = { OdooSidebarProvider, OdooToolsProvider };

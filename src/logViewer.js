@@ -1,17 +1,16 @@
 const fs = require('fs');
-const path = require('path');
 const vscode = require('vscode');
 const utils = require('./utils');
 
 // ── State ──────────────────────────────────────────────────────────
-let _panel = null;
-let _vscode = null;
-let _watcher = null;
-let _filePos = 0;
-let _debounceTimer = null;
-let _firstLines = true; // focus panel on first log output
-
-const LEVEL_PRIORITY = { CRITICAL: 0, ERROR: 1, WARNING: 2, INFO: 3, DEBUG: 4 };
+let _panel      = null;
+let _vscode     = null;
+let _watcher    = null;   // fs.watch (inotify/FSEvents/ReadDirChanges)
+let _pollTimer  = null;   // fs.watchFile fallback interval
+let _debounce   = null;
+let _filePos    = 0;
+let _firstLines = true;
+let _safetyTimer = null;
 
 // ── Public API ─────────────────────────────────────────────────────
 
@@ -24,18 +23,27 @@ function getLogFile() {
 }
 
 function setPanel(provider, vsCodeRef) {
-    _panel = provider;
-    _vscode = vsCodeRef;
+    _panel   = provider;
+    _vscode  = vsCodeRef;
 }
 
-/** Called before server starts — truncate log file */
+/** Called when server starts */
 function onServerStart() {
     if (!isEnabled()) return;
-    const logFile = getLogFile();
-    try { fs.writeFileSync(logFile, '', { flag: 'w' }); } catch (_) {}
-    _filePos = 0;
+    _stopWatcher();
     _firstLines = true;
     _panel?.clear();
+
+    const logFile = getLogFile();
+
+    // Don't truncate — record current file size as start position.
+    // This skips old content and only reads new output from this server launch.
+    try {
+        _filePos = fs.existsSync(logFile) ? fs.statSync(logFile).size : 0;
+    } catch (_) {
+        _filePos = 0;
+    }
+
     _startWatcher(logFile);
 }
 
@@ -49,55 +57,71 @@ function dispose() {
     _panel = null;
 }
 
-// ── File watcher ───────────────────────────────────────────────────
+// ── Watcher ────────────────────────────────────────────────────────
 
 function _startWatcher(logFile) {
-    _stopWatcher();
-    // Wait for file to exist (Odoo may not write immediately)
-    const tryWatch = (attempts) => {
-        if (!fs.existsSync(logFile)) {
-            if (attempts > 20) return; // give up after 10s
-            setTimeout(() => tryWatch(attempts + 1), 500);
-            return;
-        }
-        try {
-            _watcher = fs.watch(logFile, { persistent: false }, () => {
-                if (_debounceTimer) return;
-                _debounceTimer = setTimeout(_readNewBytes, 100);
-            });
-            _watcher.on('error', () => _stopWatcher());
-        } catch (_) {}
-    };
-    tryWatch(0);
+    // Strategy 1: fs.watch — instant notification (inotify/FSEvents)
+    // Works on Linux/macOS reliably. Windows temp files can be flaky.
+    try {
+        _watcher = fs.watch(logFile, { persistent: false }, () => {
+            _scheduleRead();
+        });
+        _watcher.on('error', () => {
+            // fs.watch failed — rely on polling fallback only
+            if (_watcher) { try { _watcher.close(); } catch (_) {} _watcher = null; }
+        });
+    } catch (_) {
+        _watcher = null; // fs.watch unavailable — polling will handle it
+    }
+
+    // Strategy 2: polling fallback — works on ALL platforms, 100% reliable.
+    // Fires every 1000ms regardless of fs.watch. Catches any missed events.
+    _pollTimer = setInterval(() => {
+        _scheduleRead();
+    }, 1000);
+
+    // Immediate read — catch bytes written before watcher registered
+    _readNewBytes();
+
+    // Safety read at 2s — catch anything missed during startup burst
+    _safetyTimer = setTimeout(() => { _safetyTimer = null; _readNewBytes(); }, 2000);
 }
 
 function _stopWatcher() {
-    if (_debounceTimer) { clearTimeout(_debounceTimer); _debounceTimer = null; }
-    if (_watcher) { try { _watcher.close(); } catch (_) {} _watcher = null; }
-    _pendingLines = [];
+    if (_debounce)     { clearTimeout(_debounce);   _debounce    = null; }
+    if (_safetyTimer)  { clearTimeout(_safetyTimer); _safetyTimer = null; }
+    if (_pollTimer)    { clearInterval(_pollTimer);  _pollTimer   = null; }
+    if (_watcher)      { try { _watcher.close(); } catch (_) {} _watcher = null; }
+}
+
+function _scheduleRead() {
+    // Debounce: batch rapid events into one read per 100ms
+    if (_debounce) return;
+    _debounce = setTimeout(() => {
+        _debounce = null;
+        _readNewBytes();
+    }, 100);
 }
 
 function _readNewBytes() {
-    _debounceTimer = null;
     const logFile = getLogFile();
     try {
         const stat = fs.statSync(logFile);
-        if (stat.size <= _filePos) return;
-        const fd = fs.openSync(logFile, 'r');
+        if (stat.size <= _filePos) return; // nothing new
         const len = stat.size - _filePos;
         const buf = Buffer.alloc(len);
+        const fd  = fs.openSync(logFile, 'r');
         const bytesRead = fs.readSync(fd, buf, 0, len, _filePos);
         fs.closeSync(fd);
         _filePos += bytesRead;
-        const text = buf.slice(0, bytesRead).toString('utf8');
-        const lines = text.split(/\r?\n/).filter(l => l.trim());
-        if (lines.length) {
-            _panel?.appendLines(lines);
-            // Focus log panel on first output — event-driven, no delay needed
-            if (_firstLines && _vscode) {
-                _firstLines = false;
-                _vscode.commands.executeCommand('odooDebugger.logPanel.focus');
-            }
+        const lines = buf.slice(0, bytesRead).toString('utf8')
+            .split(/\r?\n/).filter(l => l.trim());
+        if (!lines.length) return;
+        _panel?.appendLines(lines);
+        // Focus log panel on first output — event-driven
+        if (_firstLines && _vscode) {
+            _firstLines = false;
+            _vscode.commands.executeCommand('odooDebugger.logPanel.focus');
         }
     } catch (_) {}
 }
